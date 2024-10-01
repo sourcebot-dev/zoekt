@@ -62,7 +62,6 @@ func main() {
 	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".github-token")); err == nil {
 		*token = filepath.Join(os.Getenv("HOME"), ".github-token")
 	}
-
 	forks := flag.Bool("forks", false, "also mirror forks.")
 	deleteRepos := flag.Bool("delete", false, "delete missing repos")
 	namePattern := flag.String("name", "", "only clone repos whose name matches the given regexp.")
@@ -173,7 +172,6 @@ func main() {
 	{
 		trimmed := repos[:0]
 		for _, r := range repos {
-			// fmt.Println(*r.Name)
 			if filter.Include(*r.Name) {
 				trimmed = append(trimmed, r)
 			}
