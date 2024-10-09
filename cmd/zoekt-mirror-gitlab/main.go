@@ -122,7 +122,7 @@ func main() {
 	{
 		trimmed := gitlabProjects[:0]
 		for _, p := range gitlabProjects {
-			if filter.Include(p.NameWithNamespace) {
+			if filter.Include(p.PathWithNamespace) {
 				trimmed = append(trimmed, p)
 			}
 		}
