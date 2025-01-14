@@ -19,7 +19,7 @@ import (
 
 const (
 	// headerKeyTenantID is the header key for the tenant ID.
-	headerKeyTenantID = "X-Tenant-ID"
+	headerKeyTenantID = "X-Sourcegraph-Tenant-ID"
 
 	// headerValueNoTenant indicates the request has no tenant.
 	headerValueNoTenant = "none"
