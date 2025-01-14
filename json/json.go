@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/internal/tenant"
 	"github.com/sourcegraph/zoekt/query"
 )
 
@@ -83,6 +84,12 @@ func (s *jsonSearcher) jsonSearch(w http.ResponseWriter, req *http.Request) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
+	}
+
+	ctx, err = tenant.InjectTenantFromHeader(ctx, req.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := CalculateDefaultSearchLimits(ctx, q, s.Searcher, searchArgs.Opts); err != nil {
