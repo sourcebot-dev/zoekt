@@ -11,3 +11,5 @@ bazel-bin
 bazel-out
 bazel-testlogs
 bazel-zoekt
+
+.DS_STORE
