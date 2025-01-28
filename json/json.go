@@ -153,6 +153,7 @@ func CalculateDefaultSearchLimits(ctx context.Context,
 }
 
 func (s *jsonSearcher) jsonList(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	w.Header().Add("Content-Type", "application/json")
 
 	if req.Method != "POST" {
@@ -173,7 +174,13 @@ func (s *jsonSearcher) jsonList(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	listResult, err := s.Searcher.List(req.Context(), query, listArgs.Opts)
+	ctx, err = tenant.InjectTenantFromHeader(ctx, req.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	listResult, err := s.Searcher.List(ctx, query, listArgs.Opts)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
