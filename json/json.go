@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/internal/tenant"
 	"github.com/sourcegraph/zoekt/query"
 )
 
@@ -85,6 +86,12 @@ func (s *jsonSearcher) jsonSearch(w http.ResponseWriter, req *http.Request) {
 		defer cancel()
 	}
 
+	ctx, err = tenant.InjectTenantFromHeader(ctx, req.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := CalculateDefaultSearchLimits(ctx, q, s.Searcher, searchArgs.Opts); err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -146,6 +153,7 @@ func CalculateDefaultSearchLimits(ctx context.Context,
 }
 
 func (s *jsonSearcher) jsonList(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	w.Header().Add("Content-Type", "application/json")
 
 	if req.Method != "POST" {
@@ -166,7 +174,13 @@ func (s *jsonSearcher) jsonList(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	listResult, err := s.Searcher.List(req.Context(), query, listArgs.Opts)
+	ctx, err = tenant.InjectTenantFromHeader(ctx, req.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	listResult, err := s.Searcher.List(ctx, query, listArgs.Opts)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
