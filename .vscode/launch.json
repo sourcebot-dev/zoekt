@@ -23,6 +23,20 @@
       "args": ["-index", "${input:indexPath}"]
     },
     {
+      "name": "Webserver (rpc)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "cmd/zoekt-webserver",
+      "cwd": "${workspaceFolder}",
+      "args": ["-index", "${input:indexPath}", "-rpc"],
+      // Set a long watchdog tick to help with debugging
+      "env": {
+        "ZOEKT_WATCHDOG_TICK": "24h",
+        "SRC_LOG_LEVEL": "debug"
+      }
+    },
+    {
       "name": "Attach to Process (from list)",
       "type": "go",
       "request": "attach",
