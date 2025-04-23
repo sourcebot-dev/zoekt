@@ -241,10 +241,6 @@ func parseExpr(in []byte) (Q, int, error) {
 		// Later we will lift this into a root, like we do for caseQ
 		expr = &Type{Type: t, Child: nil}
 	case tokRepoSet:
-		if text == "" {
-			return nil, 0, fmt.Errorf("the reposet: atom must have an argument")
-		}
-
 		// Split the text by commas to get individual repo names
 		repos := strings.Split(text, ",")
 		set := make(map[string]bool)
