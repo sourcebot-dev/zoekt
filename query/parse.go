@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"regexp/syntax"
+	"strings"
 
 	"github.com/grafana/regexp"
 	"github.com/sourcegraph/zoekt/internal/languages"
@@ -239,6 +240,18 @@ func parseExpr(in []byte) (Q, int, error) {
 		}
 		// Later we will lift this into a root, like we do for caseQ
 		expr = &Type{Type: t, Child: nil}
+	case tokRepoSet:
+		// Split the text by commas to get individual repo names
+		repos := strings.Split(text, ",")
+		set := make(map[string]bool)
+		for _, repo := range repos {
+			repo = strings.TrimSpace(repo)
+			if repo != "" {
+				set[repo] = true
+			}
+		}
+
+		expr = &RepoSet{Set: set}
 	}
 
 	return expr, len(in) - len(b), nil
@@ -392,6 +405,7 @@ const (
 	tokArchived   = 15
 	tokPublic     = 16
 	tokFork       = 17
+	tokRepoSet    = 18
 )
 
 var tokNames = map[int]string{
@@ -412,6 +426,7 @@ var tokNames = map[int]string{
 	tokLang:       "Language",
 	tokSym:        "Symbol",
 	tokType:       "Type",
+	tokRepoSet:    "RepoSet",
 }
 
 var prefixes = map[string]int{
@@ -432,6 +447,7 @@ var prefixes = map[string]int{
 	"sym:":      tokSym,
 	"t:":        tokType,
 	"type:":     tokType,
+	"reposet:":  tokRepoSet,
 }
 
 var reservedWords = map[string]int{
