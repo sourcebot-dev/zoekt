@@ -46,6 +46,7 @@ func run() int {
 	deltaShardNumberFallbackThreshold := flag.Uint64("delta_threshold", 0, "upper limit on the number of preexisting shards that can exist before attempting a delta build (0 to disable fallback behavior)")
 	languageMap := flag.String("language_map", "", "a mapping between a language and its ctags processor (a:0,b:3).")
 	tenantID := flag.Int("tenant_id", 0, "tenant ID to use for indexed repositories")
+	repoID := flag.Uint("repo_id", 0, "opaque ID to use for indexed repositories. Surfaces as `RepositoryID` in the REST search response.")
 
 	cpuProfile := flag.String("cpuprofile", "", "write cpu profile to `file`")
 
@@ -77,6 +78,7 @@ func run() int {
 	opts := cmd.OptionsFromFlags()
 	opts.IsDelta = *isDelta
 	opts.RepositoryDescription.TenantID = *tenantID
+	opts.RepositoryDescription.ID = uint32(*repoID)
 
 	var branches []string
 	if *branchesStr != "" {
