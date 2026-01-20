@@ -211,6 +211,9 @@ type IndexBuilder struct {
 
 	// a sortable 20 chars long id.
 	ID string
+
+	// AllowBinary allows indexing of binary files (files with null bytes).
+	AllowBinary bool
 }
 
 func (d *Repository) verify() error {
@@ -425,9 +428,11 @@ func DetermineLanguageIfUnknown(doc *Document) {
 func (b *IndexBuilder) Add(doc Document) error {
 	hasher := crc64.New(crc64.MakeTable(crc64.ISO))
 
-	if idx := bytes.IndexByte(doc.Content, 0); idx >= 0 {
-		doc.SkipReason = fmt.Sprintf("binary content at byte offset %d", idx)
-		doc.Language = "binary"
+	if !b.AllowBinary {
+		if idx := bytes.IndexByte(doc.Content, 0); idx >= 0 {
+			doc.SkipReason = fmt.Sprintf("binary content at byte offset %d", idx)
+			doc.Language = "binary"
+		}
 	}
 
 	if doc.SkipReason != "" {
@@ -532,7 +537,7 @@ type DocChecker struct {
 }
 
 // Check returns a reason why the given contents are probably not source texts.
-func (t *DocChecker) Check(content []byte, maxTrigramCount int, allowLargeFile bool) error {
+func (t *DocChecker) Check(content []byte, maxTrigramCount int, allowLargeFile bool, allowBinary bool) error {
 	if len(content) == 0 {
 		return nil
 	}
@@ -541,8 +546,10 @@ func (t *DocChecker) Check(content []byte, maxTrigramCount int, allowLargeFile b
 		return fmt.Errorf("file size smaller than %d", ngramSize)
 	}
 
-	if index := bytes.IndexByte(content, 0); index > 0 {
-		return fmt.Errorf("binary data at byte offset %d", index)
+	if !allowBinary {
+		if index := bytes.IndexByte(content, 0); index > 0 {
+			return fmt.Errorf("binary data at byte offset %d", index)
+		}
 	}
 
 	// PERF: we only need to do the trigram check if the upperbound on content is greater than

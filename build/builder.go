@@ -120,6 +120,9 @@ type Options struct {
 
 	// ShardPrefix is the prefix of the shard. It defaults to the repository name.
 	ShardPrefix string
+
+	// AllowBinary allows indexing of binary files in the repository.
+	AllowBinary bool
 }
 
 // HashOptions contains only the options in Options that upon modification leads to IndexState of IndexStateMismatch during the next index building.
@@ -607,7 +610,7 @@ func (b *Builder) Add(doc zoekt.Document) error {
 		// files, the corresponding shard would be mostly empty, so
 		// insert a reason here too.
 		doc.SkipReason = fmt.Sprintf("document size %d larger than limit %d", len(doc.Content), b.opts.SizeMax)
-	} else if err := b.docChecker.Check(doc.Content, b.opts.TrigramMax, allowLargeFile); err != nil {
+	} else if err := b.docChecker.Check(doc.Content, b.opts.TrigramMax, allowLargeFile, b.opts.AllowBinary); err != nil {
 		doc.SkipReason = err.Error()
 		doc.Language = "binary"
 	}
@@ -1032,6 +1035,7 @@ func (b *Builder) newShardBuilder() (*zoekt.IndexBuilder, error) {
 	}
 	shardBuilder.IndexTime = b.indexTime
 	shardBuilder.ID = b.id
+	shardBuilder.AllowBinary = b.opts.AllowBinary
 	return shardBuilder, nil
 }
 

@@ -48,6 +48,8 @@ func run() int {
 	tenantID := flag.Int("tenant_id", 0, "tenant ID to use for indexed repositories")
 	repoID := flag.Uint("repo_id", 0, "opaque ID to use for indexed repositories. Surfaces as `RepositoryID` in the REST search response.")
 
+	allowBinary := flag.Bool("allow_binary", false, "allow binary files (containing null bytes) to be indexed.")
+
 	cpuProfile := flag.String("cpuprofile", "", "write cpu profile to `file`")
 
 	flag.Parse()
@@ -79,6 +81,7 @@ func run() int {
 	opts.IsDelta = *isDelta
 	opts.RepositoryDescription.TenantID = *tenantID
 	opts.RepositoryDescription.ID = uint32(*repoID)
+	opts.AllowBinary = *allowBinary
 
 	var branches []string
 	if *branchesStr != "" {
