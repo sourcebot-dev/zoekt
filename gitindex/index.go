@@ -469,8 +469,13 @@ func indexGitRepo(opts Options, config gitIndexConfig) (bool, error) {
 		}
 	}
 
-	if opts.Incremental && opts.BuildOptions.IncrementalSkipIndexing() {
-		return false, nil
+	if opts.Incremental {
+		state, _ := opts.BuildOptions.IndexState()
+		if state == build.IndexStateEqual {
+			log.Printf("incremental: skipping repository=%q reason=%s", opts.BuildOptions.RepositoryDescription.Name, state)
+			return false, nil
+		}
+		log.Printf("incremental: indexing repository=%q reason=%s", opts.BuildOptions.RepositoryDescription.Name, state)
 	}
 
 	// branch => (path, sha1) => repo.
