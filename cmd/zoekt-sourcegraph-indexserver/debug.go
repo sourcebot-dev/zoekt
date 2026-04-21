@@ -29,7 +29,7 @@ func debugIndex() *ffcli.Command {
 			if err != nil {
 				return err
 			}
-			id, err := strconv.Atoi(args[0])
+			id, err := strconv.ParseUint(args[0], 10, 32)
 			if err != nil {
 				return err
 			}
