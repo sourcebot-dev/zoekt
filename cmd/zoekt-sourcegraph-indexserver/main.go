@@ -906,13 +906,13 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := strconv.Atoi(r.Form.Get("repo"))
+	repoID, err := strconv.ParseUint(r.Form.Get("repo"), 10, 32)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	go func() { s.forceIndex(r.Context(), uint32(id)) }()
+	go func() { s.forceIndex(r.Context(), uint32(repoID)) }()
 
 	// 202 Accepted
 	w.WriteHeader(http.StatusAccepted)
