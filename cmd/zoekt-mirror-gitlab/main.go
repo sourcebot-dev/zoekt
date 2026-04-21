@@ -10,13 +10,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This binary fetches all repos for a user from gitlab.
+// Command zoekt-mirror-gitlab fetches all repos for a user from gitlab.
 //
 // It is recommended to use a gitlab personal access token:
 // https://docs.gitlab.com/ce/user/profile/personal_access_tokens.html. This
 // token should be stored in a file and the --token option should be used.
 // In addition, the token should be present in the ~/.netrc of the user running
-// the mirror command. For example, the ~/.netrc may look like:
+// Command mirror. For example, the ~/.netrc may look like:
 //
 //	machine gitlab.com
 //	login oauth
@@ -34,8 +34,9 @@ import (
 	"strings"
 	"time"
 
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+
 	"github.com/sourcegraph/zoekt/gitindex"
-	gitlab "github.com/xanzy/go-gitlab"
 )
 
 func main() {
@@ -86,12 +87,12 @@ func main() {
 		ListOptions: gitlab.ListOptions{
 			PerPage: 100,
 		},
-		Sort:       gitlab.String("asc"),
-		OrderBy:    gitlab.String("id"),
+		Sort:       gitlab.Ptr("asc"),
+		OrderBy:    gitlab.Ptr("id"),
 		Membership: isMember,
 	}
 	if *isPublic {
-		opt.Visibility = gitlab.Visibility(gitlab.PublicVisibility)
+		opt.Visibility = gitlab.Ptr(gitlab.PublicVisibility)
 	}
 
 	if *lastActivityAfter != "" {
@@ -99,11 +100,11 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		opt.LastActivityAfter = gitlab.Time(targetDate)
+		opt.LastActivityAfter = gitlab.Ptr(targetDate)
 	}
 
 	if *noArchived {
-		opt.Archived = gitlab.Bool(false)
+		opt.Archived = gitlab.Ptr(false)
 	}
 
 	var gitlabProjects []*gitlab.Project
@@ -192,8 +193,8 @@ func fetchProjects(destDir, token string, projects []*gitlab.Project) {
 			"zoekt.web-url":      p.WebURL,
 			"zoekt.name":         filepath.Join(u.Hostname(), p.PathWithNamespace),
 
-			"zoekt.gitlab-stars": strconv.Itoa(p.StarCount),
-			"zoekt.gitlab-forks": strconv.Itoa(p.ForksCount),
+			"zoekt.gitlab-stars": strconv.FormatInt(p.StarCount, 10),
+			"zoekt.gitlab-forks": strconv.FormatInt(p.ForksCount, 10),
 
 			"zoekt.archived": marshalBool(p.Archived),
 			"zoekt.fork":     marshalBool(p.ForkedFromProject != nil),

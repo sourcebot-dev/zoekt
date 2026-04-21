@@ -2,13 +2,15 @@
 
 This guide explains the Zoekt query language, used for searching text within Git repositories. Zoekt queries allow combining multiple filters and expressions using logical operators, negations, and grouping. Here's how to craft queries effectively.
 
+For a brief overview of Zoekt's query syntax, see [these great docs from neogrok](https://neogrok-demo-web.fly.dev/syntax).
+
 ---
 
 ## Syntax Overview
 
 A query is made up of expressions. An **expression** can be:
 - A negation (e.g., `-`),
-- A field (e.g., `repo:`).
+- A field (e.g., `repo:`),
 - A grouping (e.g., parentheses `()`),
 
 Logical `OR` operations combine multiple expressions. The **`AND` operator is implicit**, meaning multiple expressions written together will be automatically treated as `AND`.
@@ -84,6 +86,38 @@ Use `or` to combine multiple expressions.
 
 ---
 
+## Special Query Types
+
+### Filtering by Repository Type
+
+Zoekt supports filtering repositories by various attributes:
+
+```plaintext
+public:yes archived:no fork:no
+```
+
+This finds repositories that are public, not archived, and not forks.
+
+### Result Type Control
+
+The `type:` operator controls what kind of results are returned:
+
+```plaintext
+type:repo content:config
+```
+
+This returns repository names instead of file matches. Valid values include:
+- `filematch` - Returns file content matches (default)
+- `filename` - Returns only matching filenames
+- `repo` - Returns only repository names
+
+`type:` applies to the whole expression in its current scope, including `or`
+clauses. For example, `type:repo foo or bar` is equivalent to
+`type:repo (foo or bar)`. Use parentheses to scope `type:` to only one branch,
+for example `(type:repo foo) or bar`.
+
+---
+
 ## Special Query Values
 
 - **Boolean Values**:
@@ -106,6 +140,19 @@ Use `or` to combine multiple expressions.
   ```plaintext
   content:/foo.*bar/
   ```
+
+---
+
+## Case Sensitivity
+
+Zoekt supports three case sensitivity modes:
+
+- `case:yes` - Exact case matching
+- `case:no` - Case-insensitive matching
+- `case:auto` - Automatically detect based on pattern (default)
+
+In auto mode, if the pattern contains uppercase letters, the search will be
+case-sensitive; otherwise, it will be case-insensitive.
 
 ---
 

@@ -22,7 +22,8 @@ import (
 	"strings"
 
 	"github.com/grafana/regexp"
-	"github.com/sourcegraph/zoekt/internal/languages"
+
+	"github.com/sourcegraph/zoekt/languages"
 )
 
 var _ = log.Printf
@@ -68,6 +69,43 @@ func (o *orOperator) String() string {
 	return "orOp"
 }
 
+// caseScopeQ is a parse-time wrapper used to prevent case directives from an
+// outer expression list from overriding an explicitly scoped inner `case:`.
+type caseScopeQ struct {
+	Child Q
+}
+
+func (c *caseScopeQ) String() string {
+	return c.Child.String()
+}
+
+func stripCaseScopesList(qs []Q) []Q {
+	stripped := make([]Q, len(qs))
+	for i, q := range qs {
+		stripped[i] = stripCaseScopes(q)
+	}
+	return stripped
+}
+
+func stripCaseScopes(q Q) Q {
+	switch s := q.(type) {
+	case *And:
+		return &And{Children: stripCaseScopesList(s.Children)}
+	case *Or:
+		return &Or{Children: stripCaseScopesList(s.Children)}
+	case *Not:
+		return &Not{Child: stripCaseScopes(s.Child)}
+	case *Type:
+		return &Type{Type: s.Type, Child: stripCaseScopes(s.Child)}
+	case *Boost:
+		return &Boost{Boost: s.Boost, Child: stripCaseScopes(s.Child)}
+	case *caseScopeQ:
+		return stripCaseScopes(s.Child)
+	default:
+		return q
+	}
+}
+
 func isSpace(c byte) bool {
 	return c == ' ' || c == '\t'
 }
@@ -76,15 +114,21 @@ func isSpace(c byte) bool {
 func Parse(qStr string) (Q, error) {
 	b := []byte(qStr)
 
-	qs, _, err := parseExprList(b)
+	qs, n, err := parseExprList(b)
 	if err != nil {
 		return nil, err
+	}
+
+	if n != len(b) {
+		return nil, fmt.Errorf("query: extra tokens found at end input: %q", b[n:])
 	}
 
 	q, err := parseOperators(qs)
 	if err != nil {
 		return nil, err
 	}
+
+	q = stripCaseScopes(q)
 
 	return Simplify(q), nil
 }
@@ -173,7 +217,7 @@ func parseExpr(in []byte) (Q, int, error) {
 		}
 		expr = q
 	case tokLang:
-		canonical, ok := languages.GetLanguageByAlias(text)
+		canonical, ok := languages.GetLanguageByNameOrAlias(text)
 		if !ok {
 			expr = &Const{false}
 		} else {
@@ -252,6 +296,22 @@ func parseExpr(in []byte) (Q, int, error) {
 		}
 
 		expr = &RepoSet{Set: set}
+	case tokMeta:
+		// Split on ':' to separate field and value
+		parts := bytes.SplitN([]byte(text), []byte(":"), 2)
+		if len(parts) != 2 {
+			return nil, 0, fmt.Errorf("query: invalid meta field syntax %q", text)
+		}
+		field := string(parts[0])
+		valuePattern := string(parts[1])
+		re, err := regexp.Compile(valuePattern)
+		if err != nil {
+			return nil, 0, fmt.Errorf("query: invalid regexp in meta value: %v", err)
+		}
+		expr = &Meta{
+			Field: field,
+			Value: re,
+		}
 	}
 
 	return expr, len(in) - len(b), nil
@@ -346,12 +406,14 @@ func parseExprList(in []byte) ([]Q, int, error) {
 	}
 
 	setCase := "auto"
+	hasCaseScope := false
 	newQS := qs[:0]
 	typeT := uint8(100)
 	for _, q := range qs {
 		switch s := q.(type) {
 		case *caseQ:
 			setCase = s.Flavor
+			hasCaseScope = true
 		case *Type:
 			if s.Type < typeT {
 				typeT = s.Type
@@ -367,8 +429,25 @@ func parseExprList(in []byte) ([]Q, int, error) {
 		return q
 	})
 	if typeT != 100 {
-		qs = []Q{&Type{Type: typeT, Child: NewAnd(qs...)}}
+		typedQ, err := parseOperators(qs)
+		if err != nil {
+			return nil, 0, err
+		}
+		qs = []Q{&Type{Type: typeT, Child: typedQ}}
 	}
+
+	if hasCaseScope {
+		scoped := make([]Q, 0, len(qs))
+		for _, q := range qs {
+			if _, isOrOperator := q.(*orOperator); isOrOperator {
+				scoped = append(scoped, q)
+				continue
+			}
+			scoped = append(scoped, &caseScopeQ{Child: q})
+		}
+		qs = scoped
+	}
+
 	return qs, len(in) - len(b), nil
 }
 
@@ -406,6 +485,7 @@ const (
 	tokPublic     = 16
 	tokFork       = 17
 	tokRepoSet    = 18
+	tokMeta       = 19
 )
 
 var tokNames = map[int]string{
@@ -427,6 +507,7 @@ var tokNames = map[int]string{
 	tokSym:        "Symbol",
 	tokType:       "Type",
 	tokRepoSet:    "RepoSet",
+	tokMeta:       "Meta",
 }
 
 var prefixes = map[string]int{
@@ -448,6 +529,7 @@ var prefixes = map[string]int{
 	"t:":        tokType,
 	"type:":     tokType,
 	"reposet:":  tokRepoSet,
+	"meta.":     tokMeta,
 }
 
 var reservedWords = map[string]int{
