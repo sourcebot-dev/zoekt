@@ -1,3 +1,16 @@
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Command zoekt-merge-index merges a set of index shards into a compound shard.
 package main
 
 import (
@@ -8,13 +21,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/index"
 )
 
 // merge merges the input shards into a compound shard in dstDir. It returns the
 // full path to the compound shard. The input shards are removed on success.
 func merge(dstDir string, names []string) (string, error) {
-	var files []zoekt.IndexFile
+	var files []index.IndexFile
 	for _, fn := range names {
 		f, err := os.Open(fn)
 		if err != nil {
@@ -22,7 +35,7 @@ func merge(dstDir string, names []string) (string, error) {
 		}
 		defer f.Close()
 
-		indexFile, err := zoekt.NewIndexFile(f)
+		indexFile, err := index.NewIndexFile(f)
 		if err != nil {
 			return "", err
 		}
@@ -31,14 +44,14 @@ func merge(dstDir string, names []string) (string, error) {
 		files = append(files, indexFile)
 	}
 
-	tmpName, dstName, err := zoekt.Merge(dstDir, files...)
+	tmpName, dstName, err := index.Merge(dstDir, files...)
 	if err != nil {
 		return "", err
 	}
 
 	// Delete input shards.
 	for _, name := range names {
-		paths, err := zoekt.IndexFilePaths(name)
+		paths, err := index.IndexFilePaths(name)
 		if err != nil {
 			return "", fmt.Errorf("zoekt-merge-index: %w", err)
 		}
@@ -74,59 +87,8 @@ func mergeCmd(paths []string) (string, error) {
 	return merge(filepath.Dir(paths[0]), paths)
 }
 
-// explode splits the input shard into individual shards and places them in dstDir.
-// Temporary files created in the process are removed on a best effort basis.
-func explode(dstDir string, inputShard string) error {
-	f, err := os.Open(inputShard)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	indexFile, err := zoekt.NewIndexFile(f)
-	if err != nil {
-		return err
-	}
-	defer indexFile.Close()
-
-	exploded, err := zoekt.Explode(dstDir, indexFile)
-	defer func() {
-		// best effort removal of tmp files. If os.Remove fails, indexserver will delete
-		// the leftover tmp files during the next cleanup.
-		for tmpFn := range exploded {
-			os.Remove(tmpFn)
-		}
-	}()
-	if err != nil {
-		return fmt.Errorf("zoekt.Explode: %w", err)
-	}
-
-	// remove the input shard first to avoid duplicate indexes. In the worst case,
-	// the process is interrupted just after we delete the compound shard, in which
-	// case we have to reindex the lost repos.
-	paths, err := zoekt.IndexFilePaths(inputShard)
-	if err != nil {
-		return err
-	}
-	for _, path := range paths {
-		err = os.Remove(path)
-		if err != nil {
-			return err
-		}
-	}
-
-	// best effort rename shards.
-	for tmpFn, dstFn := range exploded {
-		if err := os.Rename(tmpFn, dstFn); err != nil {
-			log.Printf("explode: rename failed: %s", err)
-		}
-	}
-
-	return nil
-}
-
 func explodeCmd(path string) error {
-	return explode(filepath.Dir(path), path)
+	return index.Explode(filepath.Dir(path), path)
 }
 
 func main() {

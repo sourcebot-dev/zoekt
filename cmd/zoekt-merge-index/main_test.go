@@ -11,8 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/index"
 	"github.com/sourcegraph/zoekt/query"
-	"github.com/sourcegraph/zoekt/shards"
+	"github.com/sourcegraph/zoekt/search"
 )
 
 func TestMerge(t *testing.T) {
@@ -31,7 +32,7 @@ func TestMerge(t *testing.T) {
 	// stable
 	require.Equal(t, filepath.Base(cs), "compound-ea9613e2ffba7d7361856aebfca75fb714856509_v17.00000.zoekt")
 
-	ss, err := shards.NewDirectorySearcher(dir)
+	ss, err := search.NewDirectorySearcher(dir)
 	require.NoError(t, err)
 	defer ss.Close()
 
@@ -63,7 +64,7 @@ func TestExplode(t *testing.T) {
 
 	cs, err := filepath.Glob(filepath.Join(dir, "compound-*.zoekt"))
 	require.NoError(t, err)
-	err = explode(dir, cs[0])
+	err = index.Explode(dir, cs[0])
 	require.NoError(t, err)
 
 	cs, err = filepath.Glob(filepath.Join(dir, "compound-*.zoekt"))
@@ -80,7 +81,7 @@ func TestExplode(t *testing.T) {
 		t.Fatalf("the number of simple shards before %d and after %d should be the same", len(testShards), len(exploded))
 	}
 
-	ss, err := shards.NewDirectorySearcher(dir)
+	ss, err := search.NewDirectorySearcher(dir)
 	require.NoError(t, err)
 	defer ss.Close()
 

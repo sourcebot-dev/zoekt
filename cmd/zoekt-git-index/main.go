@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Command zoekt-git-index indexes a single git repository. It works directly with git
+// repositories and supports git-specific features like branches and submodules.
 package main
 
 import (
@@ -25,11 +27,10 @@ import (
 	"github.com/dustin/go-humanize"
 	"go.uber.org/automaxprocs/maxprocs"
 
-	"github.com/sourcegraph/zoekt/internal/profiler"
-
 	"github.com/sourcegraph/zoekt/cmd"
-	"github.com/sourcegraph/zoekt/ctags"
 	"github.com/sourcegraph/zoekt/gitindex"
+	"github.com/sourcegraph/zoekt/internal/ctags"
+	"github.com/sourcegraph/zoekt/internal/profiler"
 )
 
 func run() int {
@@ -48,7 +49,7 @@ func run() int {
 	tenantID := flag.Int("tenant_id", 0, "tenant ID to use for indexed repositories")
 	repoID := flag.Uint("repo_id", 0, "opaque ID to use for indexed repositories. Surfaces as `RepositoryID` in the REST search response.")
 
-	cpuProfile := flag.String("cpuprofile", "", "write cpu profile to `file`")
+	cpuProfile := flag.String("cpu_profile", "", "write cpu profile to `file`")
 
 	flag.Parse()
 

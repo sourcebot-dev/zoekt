@@ -8,60 +8,58 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/sourcegraph/log/logtest"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	proto "github.com/sourcegraph/zoekt/cmd/zoekt-sourcegraph-indexserver/protos/sourcegraph/zoekt/configuration/v1"
-	"github.com/sourcegraph/zoekt/ctags"
-	"github.com/sourcegraph/zoekt/internal/tenant/tenanttest"
-
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
+	"slices"
 
 	"github.com/sourcegraph/zoekt"
+	configv1 "github.com/sourcegraph/zoekt/cmd/zoekt-sourcegraph-indexserver/grpc/protos/sourcegraph/zoekt/configuration/v1"
+	"github.com/sourcegraph/zoekt/internal/ctags"
 )
 
 func TestIterateIndexOptions_Fingerprint(t *testing.T) {
-	fingerprintV0 := &proto.Fingerprint{
+	fingerprintV0 := &configv1.Fingerprint{
 		Identifier:  100,
 		GeneratedAt: timestamppb.New(time.Unix(100, 0)),
 	}
 
-	fingerprintV1 := &proto.Fingerprint{
+	fingerprintV1 := &configv1.Fingerprint{
 		Identifier:  101,
 		GeneratedAt: timestamppb.New(time.Unix(101, 0)),
 	}
 
-	fingerprintV2 := &proto.Fingerprint{
+	fingerprintV2 := &configv1.Fingerprint{
 		Identifier:  102,
 		GeneratedAt: timestamppb.New(time.Unix(102, 0)),
 	}
 
-	mkSearchConfigurationResponse := func(fingerprint *proto.Fingerprint, repoIDs ...int32) *proto.SearchConfigurationResponse {
-		repositories := make([]*proto.ZoektIndexOptions, 0, len(repoIDs))
+	mkSearchConfigurationResponse := func(fingerprint *configv1.Fingerprint, repoIDs ...int32) *configv1.SearchConfigurationResponse {
+		repositories := make([]*configv1.ZoektIndexOptions, 0, len(repoIDs))
 		for _, repoID := range repoIDs {
-			repositories = append(repositories, &proto.ZoektIndexOptions{
+			repositories = append(repositories, &configv1.ZoektIndexOptions{
 				RepoId: repoID,
 			})
 		}
 
-		return &proto.SearchConfigurationResponse{
+		return &configv1.SearchConfigurationResponse{
 			UpdatedOptions: repositories,
 			Fingerprint:    fingerprint,
 		}
 	}
 
 	grpcClient := &mockGRPCClient{
-		mockList: func(_ context.Context, in *proto.ListRequest, opts ...grpc.CallOption) (*proto.ListResponse, error) {
-			return &proto.ListResponse{
+		mockList: func(_ context.Context, in *configv1.ListRequest, opts ...grpc.CallOption) (*configv1.ListResponse, error) {
+			return &configv1.ListResponse{
 				RepoIds: []int32{1, 2, 3},
 			}, nil
 		},
@@ -77,8 +75,8 @@ func TestIterateIndexOptions_Fingerprint(t *testing.T) {
 	type step struct {
 		name string
 
-		wantFingerprint     *proto.Fingerprint
-		returnFingerprint   *proto.Fingerprint
+		wantFingerprint     *configv1.Fingerprint
+		returnFingerprint   *configv1.Fingerprint
 		returnErr           error
 		skipCheckingRepoIDs bool
 	}
@@ -110,7 +108,7 @@ func TestIterateIndexOptions_Fingerprint(t *testing.T) {
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			called := false
-			grpcClient.mockSearchConfiguration = func(_ context.Context, in *proto.SearchConfigurationRequest, opts ...grpc.CallOption) (*proto.SearchConfigurationResponse, error) {
+			grpcClient.mockSearchConfiguration = func(_ context.Context, in *configv1.SearchConfigurationRequest, opts ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error) {
 				called = true
 
 				diff := cmp.Diff(step.wantFingerprint, in.GetFingerprint(), protocmp.Transform())
@@ -139,14 +137,10 @@ func TestIterateIndexOptions_Fingerprint(t *testing.T) {
 				return
 			}
 
-			sort.Slice(iteratedIDs, func(i, j int) bool {
-				return iteratedIDs[i] < iteratedIDs[j]
-			})
+			slices.Sort(iteratedIDs)
 
 			expectedIDs := []uint32{1, 2, 3}
-			sort.Slice(expectedIDs, func(i, j int) bool {
-				return expectedIDs[i] < expectedIDs[j]
-			})
+			slices.Sort(expectedIDs)
 
 			if diff := cmp.Diff(expectedIDs, iteratedIDs); diff != "" {
 				t.Fatalf("unexpected repo ids (-want +got):\n%s", diff)
@@ -159,7 +153,7 @@ func TestGetIndexOptions(t *testing.T) {
 
 	type testCase struct {
 		name     string
-		response *proto.SearchConfigurationResponse
+		response *configv1.SearchConfigurationResponse
 		want     *IndexOptions
 		wantErr  string
 	}
@@ -167,8 +161,8 @@ func TestGetIndexOptions(t *testing.T) {
 	for _, tc := range []testCase{
 		{
 			name: "symbols, large files",
-			response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols:    true,
 						LargeFiles: []string{"foo", "bar"},
@@ -182,8 +176,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 		{
 			name: "no symbols , large files",
-			response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols:    true,
 						LargeFiles: []string{"foo", "bar"},
@@ -204,8 +198,8 @@ func TestGetIndexOptions(t *testing.T) {
 
 		{
 			name: "symbols",
-			response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols: true,
 					},
@@ -217,8 +211,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 		{
 			name: "repoID",
-			response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						RepoId: 123,
 					},
@@ -230,8 +224,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 		{
 			name: "error",
-			response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Error: "boom",
 					},
@@ -243,7 +237,7 @@ func TestGetIndexOptions(t *testing.T) {
 	} {
 		called := false
 		mockClient := &mockGRPCClient{
-			mockSearchConfiguration: func(_ context.Context, _ *proto.SearchConfigurationRequest, _ ...grpc.CallOption) (*proto.SearchConfigurationResponse, error) {
+			mockSearchConfiguration: func(_ context.Context, _ *configv1.SearchConfigurationRequest, _ ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error) {
 				called = true
 				return tc.response, nil
 			},
@@ -296,7 +290,7 @@ func TestGetIndexOptions(t *testing.T) {
 
 		called := false
 		mockClient := &mockGRPCClient{
-			mockSearchConfiguration: func(_ context.Context, _ *proto.SearchConfigurationRequest, _ ...grpc.CallOption) (*proto.SearchConfigurationResponse, error) {
+			mockSearchConfiguration: func(_ context.Context, _ *configv1.SearchConfigurationRequest, _ ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error) {
 				called = true
 				return nil, nil
 			},
@@ -334,9 +328,9 @@ func TestGetIndexOptions(t *testing.T) {
 		}
 	})
 
-	var response *proto.SearchConfigurationResponse
+	var response *configv1.SearchConfigurationResponse
 	mockClient := &mockGRPCClient{
-		mockSearchConfiguration: func(_ context.Context, req *proto.SearchConfigurationRequest, _ ...grpc.CallOption) (*proto.SearchConfigurationResponse, error) {
+		mockSearchConfiguration: func(_ context.Context, req *configv1.SearchConfigurationRequest, _ ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error) {
 			if len(req.GetRepoIds()) == 0 || req.GetRepoIds()[0] != 123 {
 				return nil, errors.New("invalid repo id")
 			}
@@ -347,12 +341,12 @@ func TestGetIndexOptions(t *testing.T) {
 	sg := newSourcegraphClient(&url.URL{Path: "/"}, "", mockClient, WithBatchSize(0))
 
 	cases := []struct {
-		Response *proto.SearchConfigurationResponse
+		Response *configv1.SearchConfigurationResponse
 		*IndexOptions
 	}{
 		{
-			Response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			Response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols:    true,
 						LargeFiles: []string{"foo", "bar"},
@@ -368,8 +362,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 
 		{
-			Response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			Response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols:    false,
 						LargeFiles: []string{"foo", "bar"},
@@ -384,12 +378,12 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 
 		{
-			Response: &proto.SearchConfigurationResponse{},
+			Response: &configv1.SearchConfigurationResponse{},
 		},
 
 		{
-			Response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			Response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Symbols: true,
 					},
@@ -403,8 +397,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 
 		{
-			Response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			Response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						RepoId: 123,
 					},
@@ -418,8 +412,8 @@ func TestGetIndexOptions(t *testing.T) {
 		},
 
 		{
-			Response: &proto.SearchConfigurationResponse{
-				UpdatedOptions: []*proto.ZoektIndexOptions{
+			Response: &configv1.SearchConfigurationResponse{
+				UpdatedOptions: []*configv1.ZoektIndexOptions{
 					{
 						Error: "boom",
 					},
@@ -456,7 +450,7 @@ func TestGetIndexOptions(t *testing.T) {
 	// Special case our fingerprint API which doesn't return anything if the
 	// repo hasn't changed.
 	t.Run("unchanged", func(t *testing.T) {
-		response = &proto.SearchConfigurationResponse{}
+		response = &configv1.SearchConfigurationResponse{}
 
 		got := false
 		var err error
@@ -473,76 +467,6 @@ func TestGetIndexOptions(t *testing.T) {
 			t.Fatalf("expected no options, got %v", got)
 		}
 	})
-}
-
-func TestIndexTenant(t *testing.T) {
-	tenanttest.MockEnforce(t)
-
-	cases := []struct {
-		name                   string
-		args                   indexArgs
-		mockRepositoryMetadata *zoekt.Repository
-		want                   []string
-	}{
-		{
-			name: "prefix",
-			args: indexArgs{
-				IndexOptions: IndexOptions{
-					RepoID:   13,
-					Name:     "test/repo",
-					CloneURL: "http://api.test/.internal/git/test/repo",
-					Branches: []zoekt.RepositoryBranch{{Name: "HEAD", Version: "deadbeef"}},
-					TenantID: 42,
-				},
-			},
-			want: []string{
-				"git -c init.defaultBranch=nonExistentBranchBB0FOFCH32 init --bare $TMPDIR/test%2Frepo.git",
-				"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 -c http.extraHeader=X-Sourcegraph-Actor-UID: internal -c http.extraHeader=X-Sourcegraph-Tenant-ID: 42 fetch --depth=1 --no-tags --filter=blob:limit=1m http://api.test/.internal/git/test/repo deadbeef",
-				"git -C $TMPDIR/test%2Frepo.git update-ref HEAD deadbeef",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.archived 0",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.fork 0",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.latestCommitDate 1",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.name test/repo",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.priority 0",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.public 0",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.repoid 13",
-				"git -C $TMPDIR/test%2Frepo.git config zoekt.tenantID 42",
-				"zoekt-git-index -submodules=false -branches HEAD -disable_ctags -shard_prefix 000000042_000000013 $TMPDIR/test%2Frepo.git",
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []string
-			runCmd := func(c *exec.Cmd) error {
-				cmd := strings.Join(c.Args, " ")
-				cmd = strings.ReplaceAll(cmd, filepath.Clean(os.TempDir()), "$TMPDIR")
-				got = append(got, cmd)
-				return nil
-			}
-
-			findRepositoryMetadata := func(args *indexArgs) (repository *zoekt.Repository, metadata *zoekt.IndexMetadata, ok bool, err error) {
-				if tc.mockRepositoryMetadata == nil {
-					return args.BuildOptions().FindRepositoryMetadata()
-				}
-
-				return tc.mockRepositoryMetadata, &zoekt.IndexMetadata{}, true, nil
-			}
-
-			c := gitIndexConfig{
-				runCmd:                 runCmd,
-				findRepositoryMetadata: findRepositoryMetadata,
-			}
-
-			if err := gitIndex(c, &tc.args, sourcegraphNop{}, logtest.Scoped(t)); err != nil {
-				t.Fatal(err)
-			}
-			if !cmp.Equal(got, tc.want) {
-				t.Errorf("git mismatch (-want +got):\n%s", cmp.Diff(tc.want, got, splitargs))
-			}
-		})
-	}
 }
 
 func TestIndex(t *testing.T) {
@@ -563,7 +487,9 @@ func TestIndex(t *testing.T) {
 		},
 		want: []string{
 			"git -c init.defaultBranch=nonExistentBranchBB0FOFCH32 init --bare $TMPDIR/test%2Frepo.git",
-			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 -c http.extraHeader=X-Sourcegraph-Actor-UID: internal -c http.extraHeader=X-Sourcegraph-Tenant-ID: 42 fetch --depth=1 --no-tags --filter=blob:limit=1m http://api.test/.internal/git/test/repo deadbeef",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Actor-UID: internal",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Tenant-ID: 42",
+			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 fetch --depth=1 --no-tags --filter=blob:limit=1048577 http://api.test/.internal/git/test/repo deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git update-ref HEAD deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.archived 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.fork 0",
@@ -573,7 +499,7 @@ func TestIndex(t *testing.T) {
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.public 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.repoid 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.tenantID 42",
-			"zoekt-git-index -submodules=false -branches HEAD -disable_ctags $TMPDIR/test%2Frepo.git",
+			"zoekt-git-index -submodules=false -branches HEAD -file_limit 1048576 -disable_ctags $TMPDIR/test%2Frepo.git",
 		},
 	}, {
 		name: "minimal-id",
@@ -588,7 +514,9 @@ func TestIndex(t *testing.T) {
 		},
 		want: []string{
 			"git -c init.defaultBranch=nonExistentBranchBB0FOFCH32 init --bare $TMPDIR/test%2Frepo.git",
-			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 -c http.extraHeader=X-Sourcegraph-Actor-UID: internal -c http.extraHeader=X-Sourcegraph-Tenant-ID: 1 fetch --depth=1 --no-tags --filter=blob:limit=1m http://api.test/.internal/git/test/repo deadbeef",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Actor-UID: internal",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Tenant-ID: 1",
+			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 fetch --depth=1 --no-tags --filter=blob:limit=1048577 http://api.test/.internal/git/test/repo deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git update-ref HEAD deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.archived 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.fork 0",
@@ -598,7 +526,7 @@ func TestIndex(t *testing.T) {
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.public 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.repoid 123",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.tenantID 1",
-			"zoekt-git-index -submodules=false -branches HEAD -disable_ctags $TMPDIR/test%2Frepo.git",
+			"zoekt-git-index -submodules=false -branches HEAD -file_limit 1048576 -disable_ctags $TMPDIR/test%2Frepo.git",
 		},
 	}, {
 		name: "all",
@@ -606,7 +534,6 @@ func TestIndex(t *testing.T) {
 			Incremental: true,
 			IndexDir:    "/data/index",
 			Parallelism: 4,
-			FileLimit:   123,
 			IndexOptions: IndexOptions{
 				Name:       "test/repo",
 				CloneURL:   "http://api.test/.internal/git/test/repo",
@@ -621,7 +548,9 @@ func TestIndex(t *testing.T) {
 		},
 		want: []string{
 			"git -c init.defaultBranch=nonExistentBranchBB0FOFCH32 init --bare $TMPDIR/test%2Frepo.git",
-			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 -c http.extraHeader=X-Sourcegraph-Actor-UID: internal -c http.extraHeader=X-Sourcegraph-Tenant-ID: 1 fetch --depth=1 --no-tags http://api.test/.internal/git/test/repo deadbeef feebdaed",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Actor-UID: internal",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Tenant-ID: 1",
+			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 fetch --depth=1 --no-tags http://api.test/.internal/git/test/repo deadbeef feebdaed",
 			"git -C $TMPDIR/test%2Frepo.git update-ref HEAD deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git update-ref refs/heads/dev feebdaed",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.archived 0",
@@ -633,7 +562,7 @@ func TestIndex(t *testing.T) {
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.repoid 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.tenantID 1",
 			"zoekt-git-index -submodules=false -incremental -branches HEAD,dev " +
-				"-file_limit 123 -parallelism 4 -index /data/index -require_ctags -large_file foo -large_file bar " +
+				"-file_limit 1048576 -parallelism 4 -index /data/index -require_ctags -large_file foo -large_file bar " +
 				"$TMPDIR/test%2Frepo.git",
 		},
 	}, {
@@ -642,7 +571,6 @@ func TestIndex(t *testing.T) {
 			Incremental: true,
 			IndexDir:    "/data/index",
 			Parallelism: 4,
-			FileLimit:   123,
 			UseDelta:    true,
 			IndexOptions: IndexOptions{
 				RepoID:     0,
@@ -670,7 +598,9 @@ func TestIndex(t *testing.T) {
 		},
 		want: []string{
 			"git -c init.defaultBranch=nonExistentBranchBB0FOFCH32 init --bare $TMPDIR/test%2Frepo.git",
-			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 -c http.extraHeader=X-Sourcegraph-Actor-UID: internal -c http.extraHeader=X-Sourcegraph-Tenant-ID: 1 fetch --depth=1 --no-tags http://api.test/.internal/git/test/repo deadbeef feebdaed 12345678 oldhead olddev oldrelease",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Actor-UID: internal",
+			"git -C $TMPDIR/test%2Frepo.git config --add http.extraHeader X-Sourcegraph-Tenant-ID: 1",
+			"git -C $TMPDIR/test%2Frepo.git -c protocol.version=2 fetch --depth=1 --no-tags http://api.test/.internal/git/test/repo deadbeef feebdaed 12345678 oldhead olddev oldrelease",
 			"git -C $TMPDIR/test%2Frepo.git update-ref HEAD deadbeef",
 			"git -C $TMPDIR/test%2Frepo.git update-ref refs/heads/dev feebdaed",
 			"git -C $TMPDIR/test%2Frepo.git update-ref refs/heads/release 12345678",
@@ -683,7 +613,7 @@ func TestIndex(t *testing.T) {
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.repoid 0",
 			"git -C $TMPDIR/test%2Frepo.git config zoekt.tenantID 1",
 			"zoekt-git-index -submodules=false -incremental -branches HEAD,dev,release " +
-				"-delta -delta_threshold 22 -file_limit 123 -parallelism 4 -index /data/index -require_ctags -large_file foo -large_file bar " +
+				"-delta -delta_threshold 22 -file_limit 1048576 -parallelism 4 -index /data/index -require_ctags -large_file foo -large_file bar " +
 				"$TMPDIR/test%2Frepo.git",
 		},
 	}}
@@ -692,6 +622,10 @@ func TestIndex(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []string
 			runCmd := func(c *exec.Cmd) error {
+				if c.Env != nil {
+					t.Fatal("expected nil Env for command. Tenant Enforcement relies on us inheritting the parent process environment.")
+				}
+
 				cmd := strings.Join(c.Args, " ")
 				cmd = strings.ReplaceAll(cmd, filepath.Clean(os.TempDir()), "$TMPDIR")
 				got = append(got, cmd)
@@ -711,7 +645,7 @@ func TestIndex(t *testing.T) {
 				findRepositoryMetadata: findRepositoryMetadata,
 			}
 
-			if err := gitIndex(c, &tc.args, sourcegraphNop{}, logtest.Scoped(t)); err != nil {
+			if err := gitIndex(context.Background(), c, &tc.args, sourcegraphNop{}, logtest.Scoped(t)); err != nil {
 				t.Fatal(err)
 			}
 			if !cmp.Equal(got, tc.want) {
@@ -726,12 +660,12 @@ var splitargs = cmpopts.AcyclicTransformer("splitargs", func(cmd string) []strin
 })
 
 type mockGRPCClient struct {
-	mockSearchConfiguration func(context.Context, *proto.SearchConfigurationRequest, ...grpc.CallOption) (*proto.SearchConfigurationResponse, error)
-	mockList                func(context.Context, *proto.ListRequest, ...grpc.CallOption) (*proto.ListResponse, error)
-	mockUpdateIndexStatus   func(context.Context, *proto.UpdateIndexStatusRequest, ...grpc.CallOption) (*proto.UpdateIndexStatusResponse, error)
+	mockSearchConfiguration func(context.Context, *configv1.SearchConfigurationRequest, ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error)
+	mockList                func(context.Context, *configv1.ListRequest, ...grpc.CallOption) (*configv1.ListResponse, error)
+	mockUpdateIndexStatus   func(context.Context, *configv1.UpdateIndexStatusRequest, ...grpc.CallOption) (*configv1.UpdateIndexStatusResponse, error)
 }
 
-func (m *mockGRPCClient) SearchConfiguration(ctx context.Context, in *proto.SearchConfigurationRequest, opts ...grpc.CallOption) (*proto.SearchConfigurationResponse, error) {
+func (m *mockGRPCClient) SearchConfiguration(ctx context.Context, in *configv1.SearchConfigurationRequest, opts ...grpc.CallOption) (*configv1.SearchConfigurationResponse, error) {
 	if m.mockSearchConfiguration != nil {
 		return m.mockSearchConfiguration(ctx, in, opts...)
 	}
@@ -739,7 +673,7 @@ func (m *mockGRPCClient) SearchConfiguration(ctx context.Context, in *proto.Sear
 	return nil, fmt.Errorf("mock RPC SearchConfiguration not implemented")
 }
 
-func (m *mockGRPCClient) List(ctx context.Context, in *proto.ListRequest, opts ...grpc.CallOption) (*proto.ListResponse, error) {
+func (m *mockGRPCClient) List(ctx context.Context, in *configv1.ListRequest, opts ...grpc.CallOption) (*configv1.ListResponse, error) {
 	if m.mockList != nil {
 		return m.mockList(ctx, in, opts...)
 	}
@@ -747,7 +681,7 @@ func (m *mockGRPCClient) List(ctx context.Context, in *proto.ListRequest, opts .
 	return nil, fmt.Errorf("mock RPC List not implemented")
 }
 
-func (m *mockGRPCClient) UpdateIndexStatus(ctx context.Context, in *proto.UpdateIndexStatusRequest, opts ...grpc.CallOption) (*proto.UpdateIndexStatusResponse, error) {
+func (m *mockGRPCClient) UpdateIndexStatus(ctx context.Context, in *configv1.UpdateIndexStatusRequest, opts ...grpc.CallOption) (*configv1.UpdateIndexStatusResponse, error) {
 	if m.mockUpdateIndexStatus != nil {
 		return m.mockUpdateIndexStatus(ctx, in, opts...)
 	}
@@ -755,7 +689,7 @@ func (m *mockGRPCClient) UpdateIndexStatus(ctx context.Context, in *proto.Update
 	return nil, fmt.Errorf("mock RPC UpdateIndexStatus not implemented")
 }
 
-var _ proto.ZoektConfigurationServiceClient = &mockGRPCClient{}
+var _ configv1.ZoektConfigurationServiceClient = &mockGRPCClient{}
 
 // Tests whether we can set git config values without error.
 func TestSetZoektConfig(t *testing.T) {
