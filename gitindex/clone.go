@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,28 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 )
+
+// redactURLCredentials removes any basic-auth userinfo from a URL-shaped
+// string so that credentials are never written to logs. Non-URL arguments
+// are returned unchanged.
+func redactURLCredentials(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.User == nil {
+		return s
+	}
+	u.User = url.User("redacted")
+	return u.String()
+}
+
+// redactURLCredentialsInArgs returns a copy of args with any URL-valued
+// arguments having their userinfo redacted.
+func redactURLCredentialsInArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = redactURLCredentials(a)
+	}
+	return out
+}
 
 // CloneRepo clones one repository, adding the given config
 // settings. It returns the bare repo directory. The `name` argument
@@ -57,7 +80,7 @@ func CloneRepo(destDir, name, cloneURL string, settings map[string]string) (stri
 
 	// Prevent prompting
 	cmd.Stdin = &bytes.Buffer{}
-	log.Println("running:", cmd.Args)
+	log.Println("running:", redactURLCredentialsInArgs(cmd.Args))
 	if err := cmd.Run(); err != nil {
 		return "", err
 	}

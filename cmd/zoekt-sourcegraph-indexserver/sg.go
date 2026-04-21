@@ -603,7 +603,7 @@ func (sf sourcegraphFake) id(name string) uint32 {
 	// allow overriding the ID.
 	idPath := filepath.Join(sf.RootDir, filepath.FromSlash(name), "SG_ID")
 	if b, _ := os.ReadFile(idPath); len(b) > 0 {
-		id, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		id, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 32)
 		if err == nil {
 			return uint32(id)
 		}

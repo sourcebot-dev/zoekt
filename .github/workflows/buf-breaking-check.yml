@@ -4,6 +4,8 @@ on:
       - opened
     paths:
       - '*.proto'
+permissions:
+  contents: read
 jobs:
   validate-protos:
     runs-on: ubuntu-latest
