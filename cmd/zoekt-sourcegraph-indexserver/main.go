@@ -852,7 +852,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	// ?id=
 	indexMsg := ""
 	if v := values.Get("id"); v != "" {
-		id, err := strconv.Atoi(v)
+		id, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
