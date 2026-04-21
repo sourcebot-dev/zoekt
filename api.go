@@ -664,8 +664,8 @@ func (r *Repository) UnmarshalJSON(data []byte) error {
 	}
 
 	if v, ok := repo.RawConfig["tenantID"]; ok {
-		id, _ := strconv.ParseInt(v, 10, 64)
-		r.TenantID = int(id)
+		id, _ := strconv.Atoi(v)
+		r.TenantID = id
 	}
 
 	// Sourcegraph indexserver doesn't set repo.Rank, so we set it here. Setting it

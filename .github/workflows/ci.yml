@@ -5,6 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 name: CI
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
