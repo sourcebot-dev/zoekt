@@ -23,7 +23,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: sourcebot-dev
-          repositories: sourcebot
+          repositories: sourcebot-private
           permission-contents: write
 
       - name: Request Sourcebot dependency update
@@ -49,7 +49,7 @@ jobs:
                 --header "Accept: application/vnd.github+json" \
                 --header "X-GitHub-Api-Version: 2022-11-28" \
                 --input - \
-                repos/sourcebot-dev/sourcebot/dispatches
+                repos/sourcebot-dev/sourcebot-private/dispatches
 
           {
             echo "## Sourcebot sync requested"
