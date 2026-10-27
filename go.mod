@@ -49,10 +49,10 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0
 	go.uber.org/atomic v1.11.0
 	go.uber.org/automaxprocs v1.6.0
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.60.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 	pgregory.net/rapid v1.2.0
@@ -139,8 +139,8 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/crypto v0.56.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/api v0.264.0 // indirect
 	google.golang.org/genproto v0.0.0-20260128011058-8636f8732409 // indirect
