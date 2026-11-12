@@ -801,6 +801,14 @@ func (b *Builder) Finish() error {
 				}
 			}
 
+			if len(repository.FileTombstones) > 0 {
+				filteredTombstones, err := filterShardFileTombstones(shard, repository.FileTombstones)
+				if err != nil {
+					return fmt.Errorf("filtering file tombstones for shard %q: %w", shard, err)
+				}
+				repository.FileTombstones = filteredTombstones
+			}
+
 			// The shard keeps its documents, but it has to describe the repository the way the
 			// shards of this build do. Otherwise its documents stay under the name, visibility
 			// and other settings that the repository had when the shard was built.
