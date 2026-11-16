@@ -1258,19 +1258,18 @@ func TestBranchMask(t *testing.T) {
 }
 
 func TestBranchLimit(t *testing.T) {
-	for limit := 64; limit <= 65; limit++ {
+	// There is no limit on the number of branches. See wide_branches_test.go
+	// for search tests with more than 64 branches.
+	for _, n := range []int{64, 65, 1000} {
 		r := &zoekt.Repository{}
-		for i := range limit {
+		for i := range n {
 			s := fmt.Sprintf("b%d", i)
 			r.Branches = append(r.Branches, zoekt.RepositoryBranch{
 				s, "v-" + s,
 			})
 		}
-		_, err := NewShardBuilder(r)
-		if limit == 64 && err != nil {
-			t.Fatalf("NewShardBuilder: %v", err)
-		} else if limit == 65 && err == nil {
-			t.Fatalf("NewShardBuilder succeeded")
+		if _, err := NewShardBuilder(r); err != nil {
+			t.Fatalf("NewShardBuilder with %d branches: %v", n, err)
 		}
 	}
 }

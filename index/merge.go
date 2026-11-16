@@ -103,7 +103,7 @@ func merge(ds ...*indexData) (*ShardBuilder, error) {
 
 	for _, d := range ds {
 		lastRepoID := -1
-		for docID := uint32(0); int(docID) < len(d.fileBranchMasks); docID++ {
+		for docID := uint32(0); docID < d.numDocs(); docID++ {
 			repoID := int(d.repos[docID])
 
 			if d.repoMetaData[repoID].Tombstone {
@@ -227,7 +227,7 @@ func explode(dstDir string, f IndexFile, ibFuncs ...shardBuilderFunc) (map[strin
 
 	var sb *ShardBuilder
 	lastRepoID := -1
-	for docID := uint32(0); int(docID) < len(d.fileBranchMasks); docID++ {
+	for docID := uint32(0); docID < d.numDocs(); docID++ {
 		repoID := int(d.repos[docID])
 
 		if d.repoMetaData[repoID].Tombstone {
@@ -294,15 +294,9 @@ func addDocument(d *indexData, ib *ShardBuilder, repoID int, docID uint32) error
 
 	// calculate branches
 	{
-		mask := d.fileBranchMasks[docID]
-		id := uint32(1)
-		for mask != 0 {
-			if mask&0x1 != 0 {
-				doc.Branches = append(doc.Branches, d.branchNames[repoID][uint(id)])
-			}
-			id <<= 1
-			mask >>= 1
-		}
+		forEachBranch(d.docBranchMask(docID), func(idx uint) {
+			doc.Branches = append(doc.Branches, d.branchNames[repoID][idx])
+		})
 	}
 	return ib.Add(doc)
 }
