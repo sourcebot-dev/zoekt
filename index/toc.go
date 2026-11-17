@@ -45,6 +45,20 @@ const IndexFormatVersion = 16
 // 12: go-enry for identifying file languages
 const FeatureVersion = 12
 
+// ReadFeatureVersion is the highest IndexMinReaderVersion this reader can
+// load. It can be ahead of FeatureVersion when a new encoding is only written
+// for some shards and every other shard stays unchanged, so existing shards
+// do not need to be reindexed.
+// 13: variable-width branch masks (more than 64 branches per repository).
+// Shards that need more than one 64-bit word per document record the width in
+// IndexMetadata.BranchMaskWords and set IndexMinReaderVersion to 13, so
+// readers that only understand 64-bit masks refuse to load them.
+const ReadFeatureVersion = 13
+
+// wideBranchMasksFeatureVersion is the minimum reader feature version for
+// shards whose branch masks use more than one 64-bit word per document.
+const wideBranchMasksFeatureVersion = 13
+
 // WriteMinFeatureVersion and ReadMinFeatureVersion constrain forwards and backwards
 // compatibility. For example, if a new way to encode filenameNgrams on disk is
 // added using a new section but the old one is retained, this would only bump

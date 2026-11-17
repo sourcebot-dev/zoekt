@@ -340,8 +340,9 @@ func TestBranchesRepos(t *testing.T) {
 			{ID: hash("bar"), Name: "bar"},
 		},
 		fileBranchMasks: []uint64{1, 1, 1, 2, 1, 2, 1},
+		branchMaskWords: 1,
 		repos:           []uint16{0, 0, 1, 1, 1, 1, 1},
-		branchIDs:       []map[string]uint{{"HEAD": 1}, {"HEAD": 1, "b1": 2}},
+		branchIDs:       []map[string]uint{{"HEAD": 0}, {"HEAD": 0, "b1": 1}},
 	}
 
 	mt, err := d.newMatchTree(&query.BranchesRepos{List: []query.BranchRepos{

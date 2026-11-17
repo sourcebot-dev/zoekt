@@ -280,8 +280,8 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 		return nil, fmt.Errorf("file is feature version %d, want feature version >= %d", d.metaData.IndexFeatureVersion, ReadMinFeatureVersion)
 	}
 
-	if d.metaData.IndexMinReaderVersion > FeatureVersion {
-		return nil, fmt.Errorf("file needs read feature version >= %d, have read feature version %d", d.metaData.IndexMinReaderVersion, FeatureVersion)
+	if d.metaData.IndexMinReaderVersion > ReadFeatureVersion {
+		return nil, fmt.Errorf("file needs read feature version >= %d, have read feature version %d", d.metaData.IndexMinReaderVersion, ReadFeatureVersion)
 	}
 
 	d.boundariesStart = toc.fileContents.data.off
@@ -335,6 +335,16 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 		return nil, err
 	}
 
+	// Shards written before variable-width branch masks have one word per
+	// document and no BranchMaskWords in their metadata.
+	d.branchMaskWords = 1
+	if d.metaData.BranchMaskWords > 1 {
+		d.branchMaskWords = d.metaData.BranchMaskWords
+	}
+	if len(d.fileBranchMasks)%d.branchMaskWords != 0 {
+		return nil, fmt.Errorf("corrupt index: %d branch mask words is not a multiple of %d words per document", len(d.fileBranchMasks), d.branchMaskWords)
+	}
+
 	d.fileNameContent, err = d.readSectionBlob(toc.fileNames.data)
 	if err != nil {
 		return nil, err
@@ -350,8 +360,11 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 	for _, md := range d.repoMetaData {
 		repoBranchIDs := make(map[string]uint, len(md.Branches))
 		repoBranchNames := make(map[uint]string, len(md.Branches))
+		if len(md.Branches) > 64*d.branchMaskWords {
+			return nil, fmt.Errorf("corrupt index: repo %q has %d branches, but branch masks only hold %d", md.Name, len(md.Branches), 64*d.branchMaskWords)
+		}
 		for j, br := range md.Branches {
-			id := uint(1) << uint(j)
+			id := uint(j)
 			repoBranchIDs[br.Name] = id
 			repoBranchNames[id] = br.Name
 		}
@@ -416,7 +429,7 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 		d.repos = fromSizedDeltas16(blob, nil)
 	} else {
 		// every document is for repo index 0 (default value of uint16)
-		d.repos = make([]uint16, len(d.fileBranchMasks))
+		d.repos = make([]uint16, d.numDocs())
 	}
 
 	if err := d.calculateStats(); err != nil {
@@ -510,7 +523,7 @@ func (d *indexData) verify() error {
 	n--
 	for what, got := range map[string]int{
 		"boundaries":        len(d.boundaries) - 1,
-		"branch masks":      len(d.fileBranchMasks),
+		"branch masks":      int(d.numDocs()),
 		"doc section index": len(d.docSectionsIndex) - 1,
 		"newlines index":    len(d.newlinesIndex) - 1,
 	} {

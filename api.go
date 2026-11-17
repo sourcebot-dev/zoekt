@@ -782,6 +782,11 @@ type IndexMetadata struct {
 	LanguageMap           map[string]uint16
 	ZoektVersion          string
 	ID                    string
+
+	// BranchMaskWords is the number of 64-bit words used per document for
+	// branch masks. Zero means one word, which is the layout of every shard
+	// written before variable-width branch masks were introduced.
+	BranchMaskWords int `json:",omitempty"`
 }
 
 // Statistics of a (collection of) repositories.
