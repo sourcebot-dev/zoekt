@@ -374,6 +374,11 @@ func TestIndexDeltaBasic(t *testing.T) {
 	emptySourcegraphIgnore := index.Document{Name: ignore.IgnoreFile}
 	sourcegraphIgnoreWithContent := index.Document{Name: ignore.IgnoreFile, Content: []byte("good_content.txt")}
 
+	sourcegraphIgnoreGenerated := index.Document{Name: ignore.IgnoreFile, Content: []byte("generated/")}
+	reportV1 := index.Document{Name: "generated/report.txt", Content: []byte("draft")}
+	reportV2 := index.Document{Name: "generated/report.txt", Content: []byte("final")}
+	summary := index.Document{Name: "generated/summary.txt", Content: []byte("summary")}
+
 	for _, test := range []struct {
 		name     string
 		branches []string
@@ -451,6 +456,31 @@ func TestIndexDeltaBasic(t *testing.T) {
 					},
 
 					expectedDocuments: []index.Document{helloWorld, fruitV1, foo},
+				},
+			},
+		},
+		{
+			name:     "addition: file reaches a second branch",
+			branches: []string{"main", "release"},
+			steps: []step{
+				{
+					name: "setup",
+					addedDocuments: branchToDocumentMap{
+						"main": []index.Document{fruitV1},
+					},
+
+					expectedDocuments: []index.Document{fruitV1},
+				},
+				{
+					name: "add main's version of fruits to 'release'",
+					addedDocuments: branchToDocumentMap{
+						"release": []index.Document{fruitV1},
+					},
+					optFn: func(t *testing.T, o *Options) {
+						o.BuildOptions.IsDelta = true
+					},
+
+					expectedDocuments: []index.Document{fruitV1},
 				},
 			},
 		},
@@ -776,6 +806,33 @@ func TestIndexDeltaBasic(t *testing.T) {
 			},
 		},
 		{
+			name:     "should apply each branch's Sourcegraph ignore file to added and modified files",
+			branches: []string{"main", "release"},
+			steps: []step{
+				{
+					name: "setup: only 'main' ignores the generated folder",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{sourcegraphIgnoreGenerated, reportV1},
+						"release": []index.Document{reportV1},
+					},
+
+					expectedDocuments: []index.Document{sourcegraphIgnoreGenerated, reportV1},
+				},
+				{
+					name: "modify the report on both branches + add a summary on 'main'",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{reportV2, summary},
+						"release": []index.Document{reportV2},
+					},
+					optFn: func(t *testing.T, o *Options) {
+						o.BuildOptions.IsDelta = true
+					},
+
+					expectedDocuments: []index.Document{sourcegraphIgnoreGenerated, reportV2},
+				},
+			},
+		},
+		{
 			name:     "should fallback to a full, normal build if the repository has more than the specified threshold of shards",
 			branches: []string{"main"},
 			steps: []step{
@@ -941,48 +998,11 @@ func TestIndexDeltaBasic(t *testing.T) {
 						t.Fatalf("expected normalBuildCalled to be %t, got %t", step.expectedFallbackToNormalBuild, normalBuildCalled)
 					}
 
-					// examine outcome: load shards into a searcher instance and run a dummy search query
-					// that returns every document contained in the shards
-					//
-					// then, compare returned set of documents with the expected set for the step and see if they agree
+					// examine outcome: compare the set of documents in the shards with the expected set
+					// for the step and see if they agree
 
-					ss, err := search.NewDirectorySearcher(indexDir)
-					if err != nil {
-						t.Fatalf("NewDirectorySearcher(%s): %s", indexDir, err)
-					}
-					defer ss.Close()
-
-					searchOpts := &zoekt.SearchOptions{Whole: true}
-					result, err := ss.Search(context.Background(), &query.Const{Value: true}, searchOpts)
-					if err != nil {
-						t.Fatalf("Search: %s", err)
-					}
-
-					var receivedDocuments []index.Document
-					for _, f := range result.Files {
-						receivedDocuments = append(receivedDocuments, index.Document{
-							Name:    f.FileName,
-							Content: f.Content,
-						})
-					}
-
-					for _, docs := range [][]index.Document{step.expectedDocuments, receivedDocuments} {
-						sort.Slice(docs, func(i, j int) bool {
-							a, b := docs[i], docs[j]
-
-							// first compare names, then fallback to contents if the names are equal
-
-							if a.Name < b.Name {
-								return true
-							}
-
-							if a.Name > b.Name {
-								return false
-							}
-
-							return bytes.Compare(a.Content, b.Content) < 0
-						})
-					}
+					receivedDocuments := indexedDocuments(t, indexDir)
+					sortDocuments(step.expectedDocuments)
 
 					compareOptions := []cmp.Option{
 						cmpopts.IgnoreFields(index.Document{}, "Branches"),
@@ -992,10 +1012,77 @@ func TestIndexDeltaBasic(t *testing.T) {
 					if diff := cmp.Diff(step.expectedDocuments, receivedDocuments, compareOptions...); diff != "" {
 						t.Errorf("diff in received documents (-want +got):%s\n:", diff)
 					}
+
+					if !options.BuildOptions.IsDelta {
+						return
+					}
+
+					// A delta build must leave the index with the same documents, on the same branches,
+					// as a clean normal build of the same commits.
+					fullOptions := options
+					fullOptions.BuildOptions.IndexDir = t.TempDir()
+					fullOptions.BuildOptions.IsDelta = false
+
+					if _, err := IndexGitRepo(fullOptions); err != nil {
+						t.Fatalf("IndexGitRepo (clean normal build): %s", err)
+					}
+
+					fullDocuments := indexedDocuments(t, fullOptions.BuildOptions.IndexDir)
+					if diff := cmp.Diff(fullDocuments, receivedDocuments, cmpopts.EquateEmpty()); diff != "" {
+						t.Errorf("delta build differs from a clean normal build (-normal +delta):%s\n:", diff)
+					}
 				})
 			}
 		})
 	}
+}
+
+// indexedDocuments returns every document in the shards of indexDir, with the branches it is on.
+func indexedDocuments(t *testing.T, indexDir string) []index.Document {
+	t.Helper()
+
+	ss, err := search.NewDirectorySearcher(indexDir)
+	if err != nil {
+		t.Fatalf("NewDirectorySearcher(%s): %s", indexDir, err)
+	}
+	defer ss.Close()
+
+	// a dummy search query that returns every document contained in the shards
+	searchOpts := &zoekt.SearchOptions{Whole: true}
+	result, err := ss.Search(context.Background(), &query.Const{Value: true}, searchOpts)
+	if err != nil {
+		t.Fatalf("Search: %s", err)
+	}
+
+	var docs []index.Document
+	for _, f := range result.Files {
+		docs = append(docs, index.Document{
+			Name:     f.FileName,
+			Content:  f.Content,
+			Branches: f.Branches,
+		})
+	}
+
+	sortDocuments(docs)
+	return docs
+}
+
+func sortDocuments(docs []index.Document) {
+	sort.Slice(docs, func(i, j int) bool {
+		a, b := docs[i], docs[j]
+
+		// first compare names, then fallback to contents if the names are equal
+
+		if a.Name < b.Name {
+			return true
+		}
+
+		if a.Name > b.Name {
+			return false
+		}
+
+		return bytes.Compare(a.Content, b.Content) < 0
+	})
 }
 
 func runGit(t *testing.T, cwd string, args ...string) {
