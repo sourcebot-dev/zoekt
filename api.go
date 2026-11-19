@@ -972,6 +972,11 @@ type SearchOptions struct {
 	// be set to 1 to find all repositories containing a result.
 	ShardRepoMaxMatchCount int
 
+	// Maximum number of matches to collect for each repository across all
+	// shards. Only collected matches count toward TotalMaxMatchCount.
+	// Zero disables the per-repository limit.
+	RepoMaxMatchCount int
+
 	// Abort the search after this much time has passed.
 	MaxWallTime time.Duration
 
@@ -1069,6 +1074,7 @@ func (s *SearchOptions) String() string {
 	addInt("ShardMaxMatchCount", s.ShardMaxMatchCount)
 	addInt("TotalMaxMatchCount", s.TotalMaxMatchCount)
 	addInt("ShardRepoMaxMatchCount", s.ShardRepoMaxMatchCount)
+	addInt("RepoMaxMatchCount", s.RepoMaxMatchCount)
 	addInt("MaxDocDisplayCount", s.MaxDocDisplayCount)
 	addInt("MaxMatchDisplayCount", s.MaxMatchDisplayCount)
 	addInt("NumContextLines", s.NumContextLines)

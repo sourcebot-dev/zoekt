@@ -21,6 +21,7 @@ import (
 	"regexp/syntax"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	enry_data "github.com/go-enry/go-enry/v2/data"
@@ -198,6 +199,16 @@ func (d *indexData) Search(ctx context.Context, q query.Q, opts *zoekt.SearchOpt
 		repoMatchCount int
 	)
 
+	var budget *repoMatchBudget
+	if opts.RepoMaxMatchCount > 0 {
+		budget, _ = ctx.Value(repoMatchBudgetContextKey{}).(*repoMatchBudget)
+		if budget == nil {
+			budget = &repoMatchBudget{limit: opts.RepoMaxMatchCount}
+		}
+	}
+	var budgetRepo *zoekt.Repository
+	var repoRemaining *atomic.Int64
+
 	docCount := uint32(len(d.fileBranchMasks))
 	lastDoc := int(-1)
 
@@ -240,6 +251,17 @@ nextFileMatch:
 			// Skip documents over ShardRepoMaxMatchCount if specified.
 			if opts.ShardRepoMaxMatchCount > 0 {
 				if repoMatchCount >= opts.ShardRepoMaxMatchCount && repoID == lastRepoID {
+					res.Stats.FilesSkipped++
+					continue
+				}
+			}
+
+			if budget != nil {
+				if repoMetadata != budgetRepo {
+					budgetRepo = repoMetadata
+					repoRemaining = budget.forRepo(repoMetadata)
+				}
+				if repoRemaining.Load() == 0 {
 					res.Stats.FilesSkipped++
 					continue
 				}
@@ -336,22 +358,36 @@ nextFileMatch:
 		fileMatch.Branches = d.gatherBranches(nextDoc, mt, known)
 		sortMatchesByScore(fileMatch.LineMatches)
 		sortChunkMatchesByScore(fileMatch.ChunkMatches)
+
+		matchCount := len(fileMatch.LineMatches)
+		for _, cm := range fileMatch.ChunkMatches {
+			matchCount += len(cm.Ranges)
+		}
+
+		// Another shard can spend the budget while this document is being
+		// evaluated. Claim only the matches that can enter the search results.
+		if repoRemaining != nil {
+			allowed := claimRepoMatches(repoRemaining, matchCount)
+			if allowed < matchCount {
+				if allowed == 0 {
+					continue
+				}
+				if opts.ChunkMatches {
+					limitChunkMatches(&fileMatch, allowed)
+				} else {
+					fileMatch.LineMatches = fileMatch.LineMatches[:allowed]
+				}
+				matchCount = allowed
+			}
+		}
 		if opts.Whole {
 			fileMatch.Content = cp.data(false)
 		}
 
-		matchedChunkRanges := 0
-		for _, cm := range fileMatch.ChunkMatches {
-			matchedChunkRanges += len(cm.Ranges)
-		}
-
-		repoMatchCount += len(fileMatch.LineMatches)
-		repoMatchCount += matchedChunkRanges
-
+		repoMatchCount += matchCount
 		res.Files = append(res.Files, fileMatch)
 
-		res.Stats.MatchCount += len(fileMatch.LineMatches)
-		res.Stats.MatchCount += matchedChunkRanges
+		res.Stats.MatchCount += matchCount
 		res.Stats.FileCount++
 	}
 

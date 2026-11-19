@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/quick"
 	"time"
@@ -199,6 +200,101 @@ func TestOrderByShard(t *testing.T) {
 		if got != want {
 			t.Logf("%d: got %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestRepoMaxMatchCountPreservesRepositoryCoverage(t *testing.T) {
+	ss := newShardedSearcher(1)
+	t.Cleanup(ss.Close)
+
+	shards := map[string]zoekt.Searcher{}
+	addShard := func(repo string, priority, matches int) {
+		name := fmt.Sprintf("shard-%d", len(shards))
+		metadata := &zoekt.Repository{
+			ID:   hash(repo),
+			Name: repo,
+			RawConfig: map[string]string{
+				"priority": strconv.Itoa(priority),
+			},
+		}
+		docs := []index.Document{{
+			Name:    name + ".txt",
+			Content: []byte(strings.Repeat("needle\n", matches)),
+		}}
+		if matches > 1 {
+			docs = append(docs, index.Document{
+				Name:    name + "-extra.txt",
+				Content: []byte("needle\n"),
+			})
+		}
+		shards[name] = searcherForTest(t, testShardBuilder(t, metadata, docs...))
+	}
+
+	for range 2 {
+		addShard("busy-a", 10, 24)
+		addShard("busy-b", 10, 24)
+	}
+	for i := range 4 {
+		addShard(fmt.Sprintf("small-%d", i), 1, 1)
+	}
+	ss.replace(shards)
+
+	opts := zoekt.SearchOptions{
+		ChunkMatches:         true,
+		TotalMaxMatchCount:   9,
+		MaxMatchDisplayCount: 8,
+	}
+	q := &query.Substring{Pattern: "needle", Content: true}
+
+	t.Run("global limit alone cuts off shard search", func(t *testing.T) {
+		// Keep the first completed shards predictable despite worker buffering.
+		previous := runtime.GOMAXPROCS(1)
+		defer runtime.GOMAXPROCS(previous)
+		res, err := ss.Search(t.Context(), q, &opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Stats.ShardsScanned >= len(shards) || res.Stats.MatchCount <= opts.TotalMaxMatchCount {
+			t.Fatalf("expected the global limit to stop the search early, got %+v", res.Stats)
+		}
+		for _, file := range res.Files {
+			if strings.HasPrefix(file.Repository, "small-") {
+				t.Fatalf("unexpected small repository in uncapped results: %s", file.Repository)
+			}
+		}
+	})
+
+	for _, workers := range []int{1, 4} {
+		t.Run(fmt.Sprintf("per-repository budget with %d workers", workers), func(t *testing.T) {
+			previous := runtime.GOMAXPROCS(workers)
+			defer runtime.GOMAXPROCS(previous)
+
+			opts := opts
+			opts.RepoMaxMatchCount = 2
+			res, err := ss.Search(t.Context(), q, &opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int{}
+			for _, file := range res.Files {
+				for _, chunk := range file.ChunkMatches {
+					counts[file.Repository] += len(chunk.Ranges)
+				}
+			}
+			want := map[string]int{
+				"busy-a": 2, "busy-b": 2,
+				"small-0": 1, "small-1": 1, "small-2": 1, "small-3": 1,
+			}
+			if diff := cmp.Diff(want, counts); diff != "" {
+				t.Errorf("per-repository match counts (-want +got):\n%s", diff)
+			}
+			if res.Stats.MatchCount != opts.MaxMatchDisplayCount || res.Stats.ShardsScanned != len(shards) {
+				t.Errorf("expected all shards to be searched within the global limit, got %+v", res.Stats)
+			}
+			if res.Stats.FilesSkipped == 0 {
+				t.Error("expected the per-repository budget to skip excess candidate files")
+			}
+		})
 	}
 }
 

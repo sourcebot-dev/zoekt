@@ -708,6 +708,8 @@ func streamSearch(ctx context.Context, proc *process, q query.Q, opts *zoekt.Sea
 
 	defer cancel()
 
+	ctx = index.WithRepoMatchBudget(ctx, opts.RepoMaxMatchCount)
+
 	// We set the number of workers to GOMAXPROCS, or the number of shards,
 	// whichever is smaller.
 	workers := min(runtime.GOMAXPROCS(0), len(shards))

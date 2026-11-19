@@ -68,6 +68,11 @@ message SearchOptions {
   // be set to 1 to find all repositories containing a result.
   int64 shard_repo_max_match_count = 5;
 
+  // Maximum number of matches to collect for each repository across all
+  // shards. Only collected matches count toward total_max_match_count.
+  // Zero disables the per-repository limit.
+  int64 repo_max_match_count = 17;
+
   // Abort the search after this much time has passed.
   google.protobuf.Duration max_wall_time = 6;
 
