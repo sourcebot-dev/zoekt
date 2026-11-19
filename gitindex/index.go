@@ -934,6 +934,9 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 	// branch name -> git worktree at most current commit
 	branchToCurrentTree := make(map[string]*object.Tree, len(branches))
 
+	// branch name -> ignore rules at most current commit
+	branchToIgnoreMatcher := make(map[string]*ignore.Matcher, len(branches))
+
 	for _, b := range branches {
 		commit, err := getCommit(repository, options.BranchPrefix, b)
 		if err != nil {
@@ -946,6 +949,13 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 		}
 
 		branchToCurrentTree[b] = tree
+
+		ig, err := newIgnoreMatcher(tree)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("getting ignore rules for branch %q: %w", b, err)
+		}
+
+		branchToIgnoreMatcher[b] = ig
 	}
 
 	rawURL := options.BuildOptions.RepositoryDescription.URL
@@ -994,9 +1004,16 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 				path = c.From.Name
 			}
 
-			// TODO@ggilmore: HACK - remove once ignore files are supported in delta builds
+			// A change to the ignore file can add or remove files that this diff doesn't mention, so it
+			// needs a normal build.
 			if path == ignore.IgnoreFile {
 				return nil, nil, nil, fmt.Errorf("%q file is not yet supported in delta builds", ignore.IgnoreFile)
+			}
+
+			// The ignore file is the same as in the last build, so a path that it matches wasn't
+			// indexed for this branch then and isn't now.
+			if branchToIgnoreMatcher[branch.Name].Match(path) {
+				continue
 			}
 
 			// A document carries every branch that has its blob at its path, so adding, modifying or
@@ -1004,6 +1021,10 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 			// So, we need to add ALL current versions of the file (across all branches) to the build.
 			onOtherBranch := false
 			for b, currentTree := range branchToCurrentTree {
+				if branchToIgnoreMatcher[b].Match(path) {
+					continue
+				}
+
 				f, err := currentTree.File(path)
 				if err != nil {
 					// the file doesn't exist in this branch

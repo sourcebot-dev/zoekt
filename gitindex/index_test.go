@@ -374,6 +374,11 @@ func TestIndexDeltaBasic(t *testing.T) {
 	emptySourcegraphIgnore := index.Document{Name: ignore.IgnoreFile}
 	sourcegraphIgnoreWithContent := index.Document{Name: ignore.IgnoreFile, Content: []byte("good_content.txt")}
 
+	sourcegraphIgnoreGenerated := index.Document{Name: ignore.IgnoreFile, Content: []byte("generated/")}
+	reportV1 := index.Document{Name: "generated/report.txt", Content: []byte("draft")}
+	reportV2 := index.Document{Name: "generated/report.txt", Content: []byte("final")}
+	summary := index.Document{Name: "generated/summary.txt", Content: []byte("summary")}
+
 	for _, test := range []struct {
 		name     string
 		branches []string
@@ -797,6 +802,33 @@ func TestIndexDeltaBasic(t *testing.T) {
 
 					expectedFallbackToNormalBuild: true,
 					expectedDocuments:             []index.Document{sourcegraphIgnoreWithContent},
+				},
+			},
+		},
+		{
+			name:     "should apply each branch's Sourcegraph ignore file to added and modified files",
+			branches: []string{"main", "release"},
+			steps: []step{
+				{
+					name: "setup: only 'main' ignores the generated folder",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{sourcegraphIgnoreGenerated, reportV1},
+						"release": []index.Document{reportV1},
+					},
+
+					expectedDocuments: []index.Document{sourcegraphIgnoreGenerated, reportV1},
+				},
+				{
+					name: "modify the report on both branches + add a summary on 'main'",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{reportV2, summary},
+						"release": []index.Document{reportV2},
+					},
+					optFn: func(t *testing.T, o *Options) {
+						o.BuildOptions.IsDelta = true
+					},
+
+					expectedDocuments: []index.Document{sourcegraphIgnoreGenerated, reportV2},
 				},
 			},
 		},
