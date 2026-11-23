@@ -36,7 +36,9 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 
 	"github.com/sourcegraph/zoekt"
@@ -966,9 +968,30 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 
 	// TODO: Support repository submodules for delta builds
 
+	// changedPath is a path that changed on at least one branch since the last build.
+	type changedPath struct {
+		// branches holds the indexes (in existingRepository.Branches) of the branches that changed
+		// the path, in ascending order.
+		branches []int
+
+		// inOlderShards is true if a branch had the file at its last indexed commit.
+		inOlderShards bool
+	}
+	changedPaths := map[string]*changedPath{}
+
+	addBranch := func(path string, id plumbing.Hash, branch string) {
+		file := fileKey{Path: path, ID: id}
+		location, ok := repos[file]
+		if !ok {
+			location = BlobLocation{GitRepo: repository, URL: u}
+		}
+		location.Branches = append(location.Branches, branch)
+		repos[file] = location
+	}
+
 	// loop over all branches, calculate the diff between our
 	// last indexed commit and the current commit, and add files mentioned in the diff
-	for _, branch := range existingRepository.Branches {
+	for i, branch := range existingRepository.Branches {
 		lastIndexedCommit, err := getCommit(repository, "", branch.Version)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("getting last indexed commit for branch %q: %w", branch.Name, err)
@@ -984,23 +1007,11 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 			return nil, nil, nil, fmt.Errorf("generating changeset for branch %q: %w", branch.Name, err)
 		}
 
-		for i, c := range changes {
-			oldFile, newFile, err := c.Files()
-			if err != nil {
-				return nil, nil, nil, fmt.Errorf("change #%d: getting files before and after change: %w", i, err)
-			}
-
-			if oldFile == nil && newFile == nil {
-				// not a file (e.g. a submodule) - nothing to index
-				continue
-			}
-
-			// Renames aren't detected, so a change is about a single path.
-			//
-			// note: a file's Name could be a path that isn't relative to the repository root - using the
-			// change's Name field is the only way that @ggilmore saw to get the full path relative to the root
+		for _, c := range changes {
+			// Renames aren't detected, so a change is about a single path. The side that doesn't
+			// have the path is empty.
 			path := c.To.Name
-			if newFile == nil {
+			if path == "" {
 				path = c.From.Name
 			}
 
@@ -1010,69 +1021,130 @@ func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[f
 				return nil, nil, nil, fmt.Errorf("%q file is not yet supported in delta builds", ignore.IgnoreFile)
 			}
 
+			wasFile, isFile := isIndexedFile(c.From.TreeEntry.Mode), isIndexedFile(c.To.TreeEntry.Mode)
+			if !wasFile && !isFile {
+				// not a file (e.g. a submodule) - nothing to index
+				continue
+			}
+
 			// The ignore file is the same as in the last build, so a path that it matches wasn't
 			// indexed for this branch then and isn't now.
 			if branchToIgnoreMatcher[branch.Name].Match(path) {
 				continue
 			}
 
-			// A document carries every branch that has its blob at its path, so adding, modifying or
-			// deleting the file on one branch can change a document that other branches share.
-			// So, we need to add ALL current versions of the file (across all branches) to the build.
-			onOtherBranch := false
-			for b, currentTree := range branchToCurrentTree {
-				if branchToIgnoreMatcher[b].Match(path) {
-					continue
-				}
-
-				f, err := currentTree.File(path)
-				if err != nil {
-					// the file doesn't exist in this branch
-					if errors.Is(err, object.ErrFileNotFound) {
-						continue
-					}
-
-					return nil, nil, nil, fmt.Errorf("getting hash for file %q in branch %q: %w", path, b, err)
-				}
-
-				if b != branch.Name {
-					onOtherBranch = true
-				}
-
-				file := fileKey{Path: path, ID: f.ID()}
-				if existing, ok := repos[file]; ok {
-					existing.Branches = append(existing.Branches, b)
-					repos[file] = existing
-				} else {
-					repos[file] = BlobLocation{
-						GitRepo:  repository,
-						URL:      u,
-						Branches: []string{b},
-					}
-				}
+			change := changedPaths[path]
+			if change == nil {
+				change = &changedPath{}
+				changedPaths[path] = change
 			}
 
-			// Tombstone the path so that the versions added above replace the ones in the older shards.
-			// A file that is new to this branch and on no other branch isn't in those shards.
-			if oldFile != nil || onOtherBranch {
-				changedOrDeletedPaths = append(changedOrDeletedPaths, path)
+			change.branches = append(change.branches, i)
+			if wasFile {
+				change.inOlderShards = true
+			}
+			if isFile {
+				addBranch(path, c.To.TreeEntry.Hash, branch.Name)
 			}
 		}
 	}
 
-	// we need to de-duplicate the branch map before returning it - it's possible for the same
-	// branch to have been added multiple times if a file has been modified across multiple commits
-	for _, info := range repos {
-		sort.Strings(info.Branches)
-		info.Branches = uniq(info.Branches)
+	// A document carries every branch that has its blob at its path, so a change on one branch can
+	// change a document that other branches share. So, the build needs the current version of each
+	// changed path from the branches that didn't change it too.
+	files := treeFiles{storer: repository.Storer, dirs: map[plumbing.Hash]*object.Tree{}}
+	for path, change := range changedPaths {
+		changedOn := change.branches
+		for i, branch := range existingRepository.Branches {
+			if len(changedOn) > 0 && changedOn[0] == i {
+				// the branch's diff already gave its version
+				changedOn = changedOn[1:]
+				continue
+			}
+
+			if branchToIgnoreMatcher[branch.Name].Match(path) {
+				continue
+			}
+
+			entry, err := files.entry(branchToCurrentTree[branch.Name], path)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("getting file %q in branch %q: %w", path, branch.Name, err)
+			}
+
+			if entry == nil {
+				continue
+			}
+
+			// the branch didn't change the file, so it had it at its last indexed commit
+			change.inOlderShards = true
+			addBranch(path, entry.Hash, branch.Name)
+		}
+
+		// Tombstone the path so that the versions added above replace the ones in the older shards.
+		// A file that is new to every branch that has it isn't in those shards.
+		if change.inOlderShards {
+			changedOrDeletedPaths = append(changedOrDeletedPaths, path)
+		}
 	}
 
-	// we also need to de-duplicate the list of changed or deleted file paths, it's also possible to have duplicates
-	// for the same reasoning as above
 	sort.Strings(changedOrDeletedPaths)
-	changedOrDeletedPaths = uniq(changedOrDeletedPaths)
 
 	return repos, nil, changedOrDeletedPaths, nil
+}
+
+// isIndexedFile reports whether a tree entry with the given mode is a file that gets a document.
+// It has to agree with RepoWalker.handleEntry, which decides this for normal builds.
+func isIndexedFile(mode filemode.FileMode) bool {
+	switch mode {
+	case filemode.Regular, filemode.Executable, filemode.Symlink:
+		return true
+	default:
+		return false
+	}
+}
+
+// treeFiles finds files in git trees. It keeps the directories it reads, so that branches share
+// the ones they have in common.
+type treeFiles struct {
+	storer storer.EncodedObjectStorer
+	dirs   map[plumbing.Hash]*object.Tree
+}
+
+// entry returns the tree's entry for the file at path, or nil if the tree has no file there.
+func (f *treeFiles) entry(tree *object.Tree, path string) (*object.TreeEntry, error) {
+	for {
+		name, rest, inDir := strings.Cut(path, "/")
+
+		entry, err := tree.FindEntry(name)
+		if errors.Is(err, object.ErrEntryNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		if !inDir {
+			if !isIndexedFile(entry.Mode) {
+				return nil, nil
+			}
+			return entry, nil
+		}
+
+		if entry.Mode != filemode.Dir {
+			return nil, nil
+		}
+
+		dir, ok := f.dirs[entry.Hash]
+		if !ok {
+			dir, err = object.GetTree(f.storer, entry.Hash)
+			if err != nil {
+				return nil, err
+			}
+			f.dirs[entry.Hash] = dir
+		}
+
+		tree, path = dir, rest
+	}
 }
 
 func prepareNormalBuild(options Options, repository *git.Repository) (repos map[fileKey]BlobLocation, branchVersions map[string]map[string]plumbing.Hash, err error) {

@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -481,6 +482,37 @@ func TestIndexDeltaBasic(t *testing.T) {
 					},
 
 					expectedDocuments: []index.Document{fruitV1},
+				},
+			},
+		},
+		{
+			name:     "addition and deletion of the same file on different branches",
+			branches: []string{"main", "release"},
+			steps: []step{
+				{
+					name: "setup",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{fruitV1},
+						"release": []index.Document{foo},
+					},
+
+					expectedDocuments: []index.Document{fruitV1, foo},
+				},
+				{
+					name: "move fruits from 'main' to 'release' + move foo from 'release' to 'main'",
+					addedDocuments: branchToDocumentMap{
+						"main":    []index.Document{foo},
+						"release": []index.Document{fruitV1},
+					},
+					deletedDocuments: branchToDocumentMap{
+						"main":    []index.Document{fruitV1},
+						"release": []index.Document{foo},
+					},
+					optFn: func(t *testing.T, o *Options) {
+						o.BuildOptions.IsDelta = true
+					},
+
+					expectedDocuments: []index.Document{fruitV1, foo},
 				},
 			},
 		},
@@ -969,7 +1001,19 @@ func TestIndexDeltaBasic(t *testing.T) {
 					deltaBuildCalled := false
 					prepareDeltaSpy := func(options Options, repository *git.Repository) (repos map[fileKey]BlobLocation, branchVersions map[string]map[string]plumbing.Hash, changedOrDeletedPaths []string, err error) {
 						deltaBuildCalled = true
-						return prepareDeltaBuild(options, repository)
+						repos, branchVersions, changedOrDeletedPaths, err = prepareDeltaBuild(options, repository)
+
+						// Documents are ranked by how many branches they list, so a branch that is
+						// listed twice ranks its document too high.
+						for file, location := range repos {
+							branches := slices.Clone(location.Branches)
+							slices.Sort(branches)
+							if len(slices.Compact(branches)) != len(location.Branches) {
+								t.Errorf("%q lists a branch more than once: %v", file.Path, location.Branches)
+							}
+						}
+
+						return repos, branchVersions, changedOrDeletedPaths, err
 					}
 
 					normalBuildCalled := false
