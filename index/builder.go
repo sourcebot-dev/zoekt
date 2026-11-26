@@ -691,8 +691,8 @@ func (b *Builder) Finish() error {
 	oldShards := b.opts.FindAllShards()
 
 	if b.opts.IsDelta {
-		// Delta shard builds need to update FileTombstone and branch commit information for all
-		// existing shards
+		// Delta shard builds need to update FileTombstones and the repository's description for
+		// all existing shards
 		for _, shard := range oldShards {
 			repositories, _, err := ReadMetadataPathAlive(shard)
 			if err != nil {
@@ -735,13 +735,18 @@ func (b *Builder) Finish() error {
 				}
 			}
 
-			repository.Branches = b.opts.RepositoryDescription.Branches
+			// The shard keeps its documents, but it has to describe the repository the way the
+			// shards of this build do. Otherwise its documents stay under the name, visibility
+			// and other settings that the repository had when the shard was built.
+			//
+			// Only what was computed from the shard's own content is kept.
+			updated := b.opts.RepositoryDescription
+			updated.SubRepoMap = repository.SubRepoMap
+			updated.IndexOptions = repository.IndexOptions
+			updated.HasSymbols = repository.HasSymbols
+			updated.FileTombstones = repository.FileTombstones
 
-			repository.LatestCommitDate = b.opts.RepositoryDescription.LatestCommitDate
-
-			repository.Metadata = b.opts.RepositoryDescription.Metadata
-
-			tempPath, finalPath, err := JsonMarshalRepoMetaTemp(shard, repository)
+			tempPath, finalPath, err := JsonMarshalRepoMetaTemp(shard, &updated)
 			if err != nil {
 				return fmt.Errorf("writing repository metadta for shard %q: %w", shard, err)
 			}
