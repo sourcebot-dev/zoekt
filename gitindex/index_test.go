@@ -1081,6 +1081,126 @@ func TestIndexDeltaBasic(t *testing.T) {
 	}
 }
 
+// A delta build keeps the older shards, so a repository that was renamed or changed visibility has
+// to be found under its new name and visibility in those shards too. The shard prefix and the
+// repository ID don't change with the name, so the older shards are still the repository's.
+func TestIndexDeltaRepositoryDescription(t *testing.T) {
+	t.Parallel()
+
+	// what a clean normal build finds: every file, under the current name and visibility only
+	allFiles := []string{"changed.txt", "unchanged.txt"}
+
+	for _, test := range []struct {
+		name   string
+		change func(t *testing.T, repositoryDir string)
+		// want holds the files that each query matches after the delta build
+		want map[string][]string
+	}{
+		{
+			name: "rename with no new commit",
+			change: func(t *testing.T, repositoryDir string) {
+				runGit(t, repositoryDir, "config", "zoekt.name", "after")
+			},
+			want: map[string][]string{"repo:^before$": nil, "repo:^after$": allFiles, "public:yes": allFiles, "public:no": nil},
+		},
+		{
+			name: "visibility change with a new commit",
+			change: func(t *testing.T, repositoryDir string) {
+				runGit(t, repositoryDir, "config", "zoekt.public", "0")
+
+				if err := os.WriteFile(filepath.Join(repositoryDir, "changed.txt"), []byte("cherry"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, repositoryDir, "commit", "-am", "change a file")
+			},
+			want: map[string][]string{"repo:^before$": allFiles, "repo:^after$": nil, "public:yes": nil, "public:no": allFiles},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			repositoryDir := t.TempDir()
+			runGit(t, repositoryDir, "init", "-b", "main")
+			runGit(t, repositoryDir, "config", "zoekt.name", "before")
+			runGit(t, repositoryDir, "config", "zoekt.public", "1")
+
+			for name, content := range map[string]string{"changed.txt": "banana", "unchanged.txt": "apple"} {
+				if err := os.WriteFile(filepath.Join(repositoryDir, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runGit(t, repositoryDir, "add", "-A")
+			runGit(t, repositoryDir, "commit", "-m", "add files")
+
+			options := Options{
+				RepoDir:     filepath.Join(repositoryDir, ".git"),
+				Branches:    []string{"HEAD"},
+				Incremental: true,
+				BuildOptions: index.Options{
+					IndexDir:              t.TempDir(),
+					ShardPrefixOverride:   "1_1",
+					RepositoryDescription: zoekt.Repository{ID: 1},
+				},
+			}
+
+			if _, err := IndexGitRepo(options); err != nil {
+				t.Fatalf("IndexGitRepo (first build): %s", err)
+			}
+
+			test.change(t, repositoryDir)
+
+			// A normal build would pass too, so it has to stay a delta build.
+			options.BuildOptions.IsDelta = true
+			_, err := indexGitRepo(options, gitIndexConfig{
+				prepareNormalBuild: func(Options, *git.Repository) (map[fileKey]BlobLocation, map[string]map[string]plumbing.Hash, error) {
+					return nil, nil, errors.New("fell back to a normal build")
+				},
+			})
+			if err != nil {
+				t.Fatalf("indexGitRepo (delta build): %s", err)
+			}
+
+			got := map[string][]string{}
+			for q := range test.want {
+				got[q] = matchedFiles(t, options.BuildOptions.IndexDir, q)
+			}
+
+			if diff := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("unexpected files matched after the delta build (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// matchedFiles returns the names of the files in the shards of indexDir that match q, sorted.
+func matchedFiles(t *testing.T, indexDir string, q string) []string {
+	t.Helper()
+
+	parsed, err := query.Parse(q)
+	if err != nil {
+		t.Fatalf("Parse(%q): %s", q, err)
+	}
+
+	ss, err := search.NewDirectorySearcher(indexDir)
+	if err != nil {
+		t.Fatalf("NewDirectorySearcher(%s): %s", indexDir, err)
+	}
+	defer ss.Close()
+
+	result, err := ss.Search(context.Background(), parsed, &zoekt.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search(%q): %s", q, err)
+	}
+
+	var names []string
+	for _, f := range result.Files {
+		names = append(names, f.FileName)
+	}
+
+	sort.Strings(names)
+	return names
+}
+
 // indexedDocuments returns every document in the shards of indexDir, with the branches it is on.
 func indexedDocuments(t *testing.T, indexDir string) []index.Document {
 	t.Helper()
