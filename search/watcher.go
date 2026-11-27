@@ -36,9 +36,16 @@ type shardLoader interface {
 	drop(filenames ...string)
 }
 
+// shardStamp is what the watcher compares to tell whether it has to load a shard again.
+type shardStamp struct {
+	shard time.Time
+	// meta is the zero time if the shard has no .meta file.
+	meta time.Time
+}
+
 type DirectoryWatcher struct {
 	dir        string
-	timestamps map[string]time.Time
+	timestamps map[string]shardStamp
 	loader     shardLoader
 
 	// closed once ready
@@ -62,7 +69,7 @@ func (sw *DirectoryWatcher) Stop() {
 func newDirectoryWatcher(dir string, loader shardLoader) (*DirectoryWatcher, error) {
 	sw := &DirectoryWatcher{
 		dir:        dir,
-		timestamps: map[string]time.Time{},
+		timestamps: map[string]shardStamp{},
 		loader:     loader,
 		ready:      make(chan struct{}),
 		quit:       make(chan struct{}),
@@ -140,7 +147,7 @@ func (s *DirectoryWatcher) scan() error {
 		}
 	}
 
-	ts := map[string]time.Time{}
+	ts := map[string]shardStamp{}
 	for _, fn := range fs {
 		if name, version := versionFromPath(fn); latest[name] != version {
 			continue
@@ -151,22 +158,23 @@ func (s *DirectoryWatcher) scan() error {
 			continue
 		}
 
-		ts[fn] = fi.ModTime()
+		stamp := shardStamp{shard: fi.ModTime()}
 
-		fiMeta, err := os.Lstat(fn + ".meta")
-		if err != nil {
-			continue
+		// The .meta file replaces the metadata in the shard, so the two are tracked apart. With
+		// only the newer of the two times, removing a .meta file that is older than its shard
+		// would go unnoticed, and the shard would keep the tombstones of that file.
+		if fiMeta, err := os.Lstat(fn + ".meta"); err == nil {
+			stamp.meta = fiMeta.ModTime()
 		}
-		if fiMeta.ModTime().After(fi.ModTime()) {
-			ts[fn] = fiMeta.ModTime()
-		}
+
+		ts[fn] = stamp
 	}
 
 	var toLoad []string
-	for k, mtime := range ts {
-		if t, ok := s.timestamps[k]; !ok || t != mtime {
+	for k, stamp := range ts {
+		if t, ok := s.timestamps[k]; !ok || t != stamp {
 			toLoad = append(toLoad, k)
-			s.timestamps[k] = mtime
+			s.timestamps[k] = stamp
 		}
 	}
 
