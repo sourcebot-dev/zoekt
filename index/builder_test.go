@@ -532,6 +532,29 @@ func TestOptions_FindAllShards(t *testing.T) {
 	}
 }
 
+// An interrupted publication can leave a shard after a gap in the shard numbers, where
+// FindAllShards doesn't see it. A normal build has to remove it anyway.
+func TestBuilder_NormalBuildRemovesShardsAfterGap(t *testing.T) {
+	indexDir := t.TempDir()
+	repository := zoekt.Repository{Name: "repo", ID: 1}
+
+	shards := createTestShard(t, indexDir, repository, 1)
+
+	// This shard's name starts with the name of the repository and ends like one of its shards.
+	// It has to survive.
+	other := createTestShard(t, indexDir, zoekt.Repository{Name: "repo_repo", ID: 2}, 1)
+
+	content, err := os.ReadFile(shards[0])
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(strings.Replace(shards[0], ".00000.", ".00002.", 1), content, 0o600))
+
+	createTestShard(t, indexDir, repository, 1)
+
+	got, err := filepath.Glob(filepath.Join(indexDir, "*"))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{shards[0], other[0]}, got)
+}
+
 func TestBuilder_BranchNamesEqual(t *testing.T) {
 	for i, test := range []struct {
 		oldBranches []zoekt.RepositoryBranch

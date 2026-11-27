@@ -615,9 +615,9 @@ func indexGitRepo(opts Options, config gitIndexConfig) (bool, error) {
 	// Preparing the build can consume substantial memory, so check usage before starting to index.
 	builder.CheckMemoryUsage()
 
-	// we don't need to check error, since we either already have an error, or
-	// we returning the first call to builder.Finish.
-	defer builder.Finish() // nolint:errcheck
+	// Finish runs only after every document was read. On any earlier return, nothing is
+	// published: the index would be missing documents.
+	defer builder.Abort()
 
 	for _, f := range changedOrRemovedFiles {
 		builder.MarkFileAsChangedOrRemoved(f)
@@ -871,6 +871,12 @@ type gitIndexConfig struct {
 func prepareDeltaBuild(options Options, repository *git.Repository) (repos map[fileKey]BlobLocation, branchVersions map[string]map[string]plumbing.Hash, changedOrDeletedPaths []string, err error) {
 	if options.Submodules {
 		return nil, nil, nil, fmt.Errorf("delta builds currently don't support submodule indexing")
+	}
+
+	// A delta only replaces what changed since the last indexed commit, so it can't repair an
+	// index that is a mix of two builds.
+	if options.BuildOptions.PublishIncomplete() {
+		return nil, nil, nil, fmt.Errorf("the previous index publication did not complete")
 	}
 
 	// discover what commits we indexed during our last build

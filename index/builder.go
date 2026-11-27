@@ -27,6 +27,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"sort"
@@ -346,6 +347,10 @@ func (o *Options) shardName(n int) string {
 }
 
 func (o *Options) shardNameVersion(version, n int) string {
+	return shardName(o.IndexDir, o.shardPrefix(), version, n)
+}
+
+func (o *Options) shardPrefix() string {
 	prefix := o.ShardPrefixOverride // ShardPrefixOverride takes precedence to support custom shard naming strategies
 
 	if prefix == "" {
@@ -358,7 +363,42 @@ func (o *Options) shardNameVersion(version, n int) string {
 		}
 	}
 
-	return shardName(o.IndexDir, prefix, version, n)
+	return prefix
+}
+
+// publishMarker returns the path of the file that exists while Builder.Finish replaces the
+// repository's index files.
+func (o *Options) publishMarker() string {
+	return filepath.Join(o.IndexDir, escapeShardPrefix(o.shardPrefix())+"_publishing")
+}
+
+// PublishIncomplete reports whether a build started to replace the repository's index files and
+// didn't get to the end. The files can then be a mix of two builds, so the metadata of the first
+// shard doesn't describe the index, and only a normal build repairs it.
+func (o *Options) PublishIncomplete() bool {
+	_, err := os.Lstat(o.publishMarker())
+	return !os.IsNotExist(err)
+}
+
+// shardFilesByName returns the repository's shard and .meta files in the index directory, at any
+// shard number and format version. Unlike FindAllShards, it doesn't stop at a gap in the numbers.
+func (o *Options) shardFilesByName() ([]string, error) {
+	// An empty IndexDir is the working directory, as it is for shardName.
+	entries, err := os.ReadDir(filepath.Clean(o.IndexDir))
+	if err != nil {
+		return nil, err
+	}
+
+	pattern := regexp.MustCompile("^" + regexp.QuoteMeta(escapeShardPrefix(o.shardPrefix())) + `_v\d+\.\d{5,}\.zoekt(\.meta)?$`)
+
+	var paths []string
+	for _, entry := range entries {
+		if pattern.MatchString(entry.Name()) {
+			paths = append(paths, filepath.Join(o.IndexDir, entry.Name()))
+		}
+	}
+
+	return paths, nil
 }
 
 type IndexState string
@@ -371,6 +411,10 @@ const (
 	IndexStateMeta    IndexState = "meta-mismatch"
 	IndexStateContent IndexState = "content-mismatch"
 	IndexStateEqual   IndexState = "equal"
+
+	// IndexStatePublishIncomplete means that Options.PublishIncomplete is true. No shard name is
+	// returned with it.
+	IndexStatePublishIncomplete IndexState = "publish-incomplete"
 )
 
 var readVersions = []struct {
@@ -394,6 +438,10 @@ func (o *Options) IncrementalSkipIndexing() bool {
 // IndexState checks how the index present on disk compares to the build
 // options and returns the IndexState and the name of the first shard.
 func (o *Options) IndexState() (IndexState, string) {
+	if o.PublishIncomplete() {
+		return IndexStatePublishIncomplete, ""
+	}
+
 	// Open the latest version we support that is on disk.
 	fn := o.findShard()
 	if fn == "" {
@@ -655,9 +703,28 @@ func (b *Builder) MarkFileAsChangedOrRemoved(path string) {
 	b.opts.changedOrRemovedFiles = append(b.opts.changedOrRemovedFiles, path)
 }
 
+// Abort discards buffered documents, waits for shard builds in flight and removes their
+// temporary files. It publishes nothing and leaves the index as it was. After Abort, Add and
+// Finish do no further work.
+//
+// It is safe to call Abort() multiple times, and after Finish.
+func (b *Builder) Abort() {
+	b.finishCalled = true
+	b.todo = nil
+	b.building.Wait()
+
+	for tmp := range b.finishedShards {
+		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed to remove temporary shard %s: %v", tmp, err)
+		}
+	}
+	b.finishedShards = map[string]string{}
+}
+
 // Finish creates a last shard from the buffered documents, and clears
-// stale shards from previous runs. This should always be called, also
-// in failure cases, to ensure cleanup.
+// stale shards from previous runs. Either Finish or Abort must be called
+// to ensure cleanup. Call Abort, not Finish, if a document couldn't be
+// read: Finish would publish an index without it.
 //
 // It is safe to call Finish() multiple times.
 func (b *Builder) Finish() error {
@@ -676,11 +743,7 @@ func (b *Builder) Finish() error {
 	}
 
 	if b.buildError != nil {
-		for tmp := range b.finishedShards {
-			log.Printf("Builder.Finish %s", tmp)
-			os.Remove(tmp)
-		}
-		b.finishedShards = map[string]string{}
+		b.Abort()
 		return b.buildError
 	}
 
@@ -782,6 +845,28 @@ func (b *Builder) Finish() error {
 				toDelete[p] = struct{}{}
 			}
 		}
+
+		// An interrupted publication can leave a gap in the shard numbers. FindAllShards stops
+		// there, but the shards after the gap are still searched.
+		paths, err := b.opts.shardFilesByName()
+		if err != nil {
+			recordBuildError(fmt.Errorf("failed to find old shards by name: %w", err))
+		}
+		for _, p := range paths {
+			toDelete[p] = struct{}{}
+		}
+	}
+
+	// The marker is there from before the first change to after the last one, so a publication
+	// that stops in between can't pass for a complete index.
+	marker := b.opts.publishMarker()
+	if err := os.WriteFile(marker, nil, 0o666); err != nil {
+		for tmp := range artifactPaths {
+			os.Remove(tmp)
+		}
+		b.finishedShards = map[string]string{}
+		recordBuildError(fmt.Errorf("creating publish marker %q: %w", marker, err))
+		return b.buildError
 	}
 
 	for tmp, final := range artifactPaths {
@@ -816,6 +901,12 @@ func (b *Builder) Finish() error {
 		log.Printf("removing old shard file: %s", p)
 		if err := os.Remove(p); err != nil {
 			recordBuildError(fmt.Errorf("removing old shard file %q: %w", p, err))
+		}
+	}
+
+	if b.buildError == nil {
+		if err := os.Remove(marker); err != nil {
+			recordBuildError(fmt.Errorf("removing publish marker %q: %w", marker, err))
 		}
 	}
 
