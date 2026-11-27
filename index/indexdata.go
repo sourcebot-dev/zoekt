@@ -70,12 +70,19 @@ type indexData struct {
 	// rune offsets for the file name boundaries
 	fileNameEndRunes []uint32
 
+	// fileBranchMasks holds branchMaskWords 64-bit words per document. Bit i
+	// (word i/64, bit i%64) is set if the document is in branch i of its
+	// repository. Use docBranchMask to get the words of one document.
 	fileBranchMasks []uint64
 
-	// mask (power of 2) => name
+	// branchMaskWords is the number of 64-bit words per document in
+	// fileBranchMasks. It is always at least 1.
+	branchMaskWords int
+
+	// branch index => name
 	branchNames []map[uint]string
 
-	// name => mask (power of 2)
+	// name => branch index
 	branchIDs []map[string]uint
 
 	metaData zoekt.IndexMetadata
@@ -282,9 +289,12 @@ func (d *indexData) calculateNewLinesStats(start, end uint32) (count, defaultCou
 	for i := start; i < end; i++ {
 		// branchMask is a bitmask of the branches for a document. Zoekt by
 		// convention represents the default branch as the lowest bit.
-		branchMask := d.fileBranchMasks[i]
-		isDefault := (branchMask & 1) == 1
-		others := uint64(bits.OnesCount64(branchMask >> 1))
+		branchMask := d.docBranchMask(i)
+		isDefault := (branchMask[0] & 1) == 1
+		others := uint64(bits.OnesCount64(branchMask[0] >> 1))
+		for _, w := range branchMask[1:] {
+			others += uint64(bits.OnesCount64(w))
+		}
 
 		// this is readNewlines but only reading the size of each section which
 		// corresponds to the number of newlines.
@@ -513,7 +523,10 @@ func (d *indexData) fileName(i uint32) []byte {
 }
 
 func (d *indexData) numDocs() uint32 {
-	return uint32(len(d.fileBranchMasks))
+	if d.branchMaskWords <= 1 {
+		return uint32(len(d.fileBranchMasks))
+	}
+	return uint32(len(d.fileBranchMasks) / d.branchMaskWords)
 }
 
 // isDocTombstoned reports whether doc is marked as tombstoned in this shard.
@@ -608,4 +621,24 @@ func encodeRawConfig(rawConfig map[string]string) uint8 {
 		encoded = encoded | e<<(2*i)
 	}
 	return encoded
+}
+
+// docBranchMask returns the branch mask words of docID. Bit i (word i/64, bit
+// i%64) is set if the document is in branch i of its repository.
+func (d *indexData) docBranchMask(docID uint32) []uint64 {
+	w := d.branchMaskWords
+	start := int(docID) * w
+	return d.fileBranchMasks[start : start+w : start+w]
+}
+
+// forEachBranch calls f with the index of every branch set in mask, in
+// ascending order.
+func forEachBranch(mask []uint64, f func(idx uint)) {
+	for wi, w := range mask {
+		for w != 0 {
+			bit := bits.TrailingZeros64(w)
+			f(uint(wi*64 + bit))
+			w &= w - 1
+		}
+	}
 }

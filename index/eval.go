@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/bits"
 	"regexp/syntax"
 	"sort"
 	"strings"
@@ -160,7 +161,7 @@ func (d *indexData) Search(ctx context.Context, q query.Q, opts *zoekt.SearchOpt
 	}
 
 	if opts.EstimateDocCount {
-		res.Stats.ShardFilesConsidered = len(d.fileBranchMasks)
+		res.Stats.ShardFilesConsidered = int(d.numDocs())
 		return &res, nil
 	}
 
@@ -198,7 +199,7 @@ func (d *indexData) Search(ctx context.Context, q query.Q, opts *zoekt.SearchOpt
 		repoMatchCount int
 	)
 
-	docCount := uint32(len(d.fileBranchMasks))
+	docCount := d.numDocs()
 	lastDoc := int(-1)
 
 nextFileMatch:
@@ -475,14 +476,10 @@ func setScoreWeight(scoreWeight float64, cm []*candidateMatch) []*candidateMatch
 }
 
 func (d *indexData) branchIndex(docID uint32) int {
-	mask := d.fileBranchMasks[docID]
-	idx := 0
-	for mask != 0 {
-		if mask&0x1 != 0 {
-			return idx
+	for wi, w := range d.docBranchMask(docID) {
+		if w != 0 {
+			return wi*64 + bits.TrailingZeros64(w)
 		}
-		idx++
-		mask >>= 1
 	}
 	return -1
 }
@@ -492,30 +489,38 @@ func (d *indexData) branchIndex(docID uint32) int {
 // branches containing the docID and matching the branch filter. Otherwise, it
 // returns all branches containing docID.
 func (d *indexData) gatherBranches(docID uint32, mt matchTree, known map[matchTree]bool) []string {
-	var mask uint64
+	var smallMask [4]uint64
+	var mask []uint64
+	if d.branchMaskWords <= len(smallMask) {
+		mask = smallMask[:d.branchMaskWords]
+	} else {
+		mask = make([]uint64, d.branchMaskWords)
+	}
 	visitMatchAtoms(mt, known, func(mt matchTree) {
 		bq, ok := mt.(*branchQueryMatchTree)
 		if !ok {
 			return
 		}
 
-		mask = mask | bq.branchMask()
+		bq.orBranchMask(mask)
 	})
 
-	if mask == 0 {
-		mask = d.fileBranchMasks[docID]
+	empty := true
+	for _, w := range mask {
+		if w != 0 {
+			empty = false
+			break
+		}
+	}
+	if empty {
+		mask = d.docBranchMask(docID)
 	}
 
 	var branches []string
-	id := uint64(1)
 	branchNames := d.branchNames[d.repos[docID]]
-	for mask != 0 {
-		if mask&0x1 != 0 {
-			branches = append(branches, branchNames[uint(id)])
-		}
-		id <<= 1
-		mask >>= 1
-	}
+	forEachBranch(mask, func(idx uint) {
+		branches = append(branches, branchNames[idx])
+	})
 
 	return branches
 }

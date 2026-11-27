@@ -295,8 +295,14 @@ type ShardBuilder struct {
 
 	checksums []byte
 
-	branchMasks []uint64
-	subRepos    []uint32
+	// branchMasks holds branchMaskWords 64-bit words per document. Bit i of
+	// a document's mask (word i/64, bit i%64) is set if the document is
+	// part of the i-th branch of its repository.
+	branchMasks     []uint64
+	branchMaskWords int
+	// branchIndices maps branch name to index for the last added repository.
+	branchIndices map[string]int
+	subRepos      []uint32
 
 	// docID => repoID
 	repos []uint16
@@ -424,10 +430,6 @@ func (b *ShardBuilder) setRepository(desc *zoekt.Repository) error {
 		return err
 	}
 
-	if len(desc.Branches) > 64 {
-		return fmt.Errorf("too many branches")
-	}
-
 	repo := *desc
 
 	// copy subrepomap without root
@@ -439,6 +441,14 @@ func (b *ShardBuilder) setRepository(desc *zoekt.Repository) error {
 	}
 
 	b.repoList = append(b.repoList, repo)
+
+	b.branchIndices = make(map[string]int, len(repo.Branches))
+	for i, br := range repo.Branches {
+		if _, ok := b.branchIndices[br.Name]; !ok {
+			b.branchIndices[br.Name] = i
+		}
+	}
+	b.growBranchMaskWords(branchMaskWordsFor(len(repo.Branches)))
 
 	return b.populateSubRepoIndices()
 }
@@ -598,13 +608,22 @@ func (b *ShardBuilder) Add(doc Document) error {
 		return fmt.Errorf("unknown subrepo path %q", doc.SubRepositoryPath)
 	}
 
-	var mask uint64
+	if b.branchMaskWords == 0 {
+		b.branchMaskWords = 1
+	}
+	var smallMask [4]uint64
+	var mask []uint64
+	if b.branchMaskWords <= len(smallMask) {
+		mask = smallMask[:b.branchMaskWords]
+	} else {
+		mask = make([]uint64, b.branchMaskWords)
+	}
 	for _, br := range doc.Branches {
-		m := b.branchMask(br)
-		if m == 0 {
+		i, ok := b.branchIndices[br]
+		if !ok {
 			return fmt.Errorf("no branch found for %s", br)
 		}
-		mask |= m
+		mask[i/64] |= uint64(1) << uint(i%64)
 	}
 
 	if repoIdx > 1<<16 {
@@ -623,7 +642,7 @@ func (b *ShardBuilder) Add(doc Document) error {
 	b.nameStrings = append(b.nameStrings, nameStr)
 	b.docSections = append(b.docSections, doc.Symbols)
 	b.fileEndSymbol = append(b.fileEndSymbol, uint32(len(b.runeDocSections)))
-	b.branchMasks = append(b.branchMasks, mask)
+	b.branchMasks = append(b.branchMasks, mask...)
 	b.checksums = append(b.checksums, hasher.Sum(nil)...)
 
 	langCode, ok := b.languageMap[doc.Language]
@@ -645,13 +664,35 @@ func (b *ShardBuilder) Add(doc Document) error {
 	return nil
 }
 
-func (b *ShardBuilder) branchMask(br string) uint64 {
-	for i, b := range b.repoList[len(b.repoList)-1].Branches {
-		if b.Name == br {
-			return uint64(1) << uint(i)
-		}
+// branchMaskWordsFor returns the number of 64-bit words needed to hold a
+// branch mask for n branches. It is at least 1.
+func branchMaskWordsFor(n int) int {
+	if n <= 64 {
+		return 1
 	}
-	return 0
+	return (n + 63) / 64
+}
+
+// growBranchMaskWords widens the per-document branch masks to at least
+// words 64-bit words, re-laying out masks of documents already added. This
+// only happens when a shard holds several repositories (e.g. compound shards)
+// and a later repository has more branches than the earlier ones.
+func (b *ShardBuilder) growBranchMaskWords(words int) {
+	old := b.branchMaskWords
+	if old == 0 {
+		old = 1
+	}
+	if words <= old {
+		b.branchMaskWords = old
+		return
+	}
+	nDocs := len(b.branchMasks) / old
+	grown := make([]uint64, nDocs*words)
+	for d := 0; d < nDocs; d++ {
+		copy(grown[d*words:], b.branchMasks[d*old:(d+1)*old])
+	}
+	b.branchMasks = grown
+	b.branchMaskWords = words
 }
 
 // repoIDs returns a list of sourcegraph IDs for the indexed repos. If the ID

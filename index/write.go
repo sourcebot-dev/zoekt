@@ -210,11 +210,22 @@ func (b *ShardBuilder) Write(out io.Writer) error {
 		indexTime = time.Now().UTC()
 	}
 
+	// Shards that fit every branch mask into one 64-bit word keep the
+	// historical layout and stay readable by older readers. Wider masks are
+	// recorded in the metadata and require a reader that understands them.
+	minReaderVersion := WriteMinFeatureVersion
+	branchMaskWords := 0
+	if b.branchMaskWords > 1 {
+		minReaderVersion = wideBranchMasksFeatureVersion
+		branchMaskWords = b.branchMaskWords
+	}
+
 	if err := b.writeJSON(&zoekt.IndexMetadata{
 		IndexFormatVersion:    b.indexFormatVersion,
 		IndexTime:             indexTime,
 		IndexFeatureVersion:   b.featureVersion,
-		IndexMinReaderVersion: WriteMinFeatureVersion,
+		IndexMinReaderVersion: minReaderVersion,
+		BranchMaskWords:       branchMaskWords,
 		PlainASCII:            b.contentPostings.isPlainASCII && b.namePostings.isPlainASCII,
 		LanguageMap:           b.languageMap,
 		ZoektVersion:          Version,
