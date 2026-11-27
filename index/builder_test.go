@@ -533,26 +533,33 @@ func TestOptions_FindAllShards(t *testing.T) {
 }
 
 // An interrupted publication can leave a shard after a gap in the shard numbers, where
-// FindAllShards doesn't see it. A normal build has to remove it anyway.
+// FindAllShards doesn't see it. A normal build has to remove it anyway. It must not remove
+// anything else that starts with the repository's name.
 func TestBuilder_NormalBuildRemovesShardsAfterGap(t *testing.T) {
 	indexDir := t.TempDir()
-	repository := zoekt.Repository{Name: "repo", ID: 1}
+	repository := zoekt.Repository{Name: "ctagsrepo", ID: 1}
 
 	shards := createTestShard(t, indexDir, repository, 1)
-
-	// This shard's name starts with the name of the repository and ends like one of its shards.
-	// It has to survive.
-	other := createTestShard(t, indexDir, zoekt.Repository{Name: "repo_repo", ID: 2}, 1)
 
 	content, err := os.ReadFile(shards[0])
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(strings.Replace(shards[0], ".00000.", ".00002.", 1), content, 0o600))
 
+	// Shards of the next format version wait here until the search service switches to them.
+	staged := filepath.Join(indexDir, "ctagsrepo_v17.00000.zoekt")
+	content, err = os.ReadFile("../testdata/shards/ctagsrepo_v17.00000.zoekt")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(staged, content, 0o600))
+	require.NoError(t, os.WriteFile(staged+".meta", []byte("[]"), 0o600))
+
+	// Another repository, whose shard name starts and ends like one of this repository's.
+	other := createTestShard(t, indexDir, zoekt.Repository{Name: "ctagsrepo_2", ID: 2}, 1)
+
 	createTestShard(t, indexDir, repository, 1)
 
 	got, err := filepath.Glob(filepath.Join(indexDir, "*"))
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{shards[0], other[0]}, got)
+	require.ElementsMatch(t, []string{shards[0], staged, staged + ".meta", other[0]}, got)
 }
 
 func TestBuilder_BranchNamesEqual(t *testing.T) {

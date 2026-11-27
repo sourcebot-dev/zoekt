@@ -381,7 +381,10 @@ func (o *Options) PublishIncomplete() bool {
 }
 
 // shardFilesByName returns the repository's shard and .meta files in the index directory, at any
-// shard number and format version. Unlike FindAllShards, it doesn't stop at a gap in the numbers.
+// shard number. Unlike FindAllShards, it doesn't stop at a gap in the numbers.
+//
+// It only returns files of the format version that a build writes. Shards of another version can
+// be there for an upgrade of the search service, which reads them once it is switched over.
 func (o *Options) shardFilesByName() ([]string, error) {
 	// An empty IndexDir is the working directory, as it is for shardName.
 	entries, err := os.ReadDir(filepath.Clean(o.IndexDir))
@@ -389,7 +392,7 @@ func (o *Options) shardFilesByName() ([]string, error) {
 		return nil, err
 	}
 
-	pattern := regexp.MustCompile("^" + regexp.QuoteMeta(escapeShardPrefix(o.shardPrefix())) + `_v\d+\.\d{5,}\.zoekt(\.meta)?$`)
+	pattern := regexp.MustCompile(fmt.Sprintf(`^%s_v%d\.\d{5,}\.zoekt(\.meta)?$`, regexp.QuoteMeta(escapeShardPrefix(o.shardPrefix())), IndexFormatVersion))
 
 	var paths []string
 	for _, entry := range entries {
