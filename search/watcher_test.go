@@ -15,13 +15,19 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
+	"github.com/sourcegraph/zoekt"
 	"github.com/sourcegraph/zoekt/index"
+	"github.com/sourcegraph/zoekt/query"
 )
 
 type loggingLoader struct {
@@ -217,6 +223,107 @@ func TestDirWatcherLoadLatest(t *testing.T) {
 	case k := <-logger.drops:
 		t.Errorf("spurious drops of %q", k)
 	default:
+	}
+}
+
+// A normal build renames its shards into place before it removes the .meta files that a delta
+// build left next to the shards they replace. A searcher that loads a new shard in between reads
+// the old .meta file with it, so it has to load the shard again once that file is gone.
+func TestDirWatcherReloadsShardWhenMetaIsRemoved(t *testing.T) {
+	build := func(dir string, delta bool, files map[string]string) {
+		t.Helper()
+
+		b, err := index.NewBuilder(index.Options{
+			IndexDir:              dir,
+			RepositoryDescription: zoekt.Repository{Name: "repo", ID: 1},
+			DisableCTags:          true,
+			IsDelta:               delta,
+		})
+		if err != nil {
+			t.Fatalf("NewBuilder: %v", err)
+		}
+		for name, content := range files {
+			if delta {
+				b.MarkFileAsChangedOrRemoved(name)
+			}
+			if err := b.AddFile(name, []byte(content)); err != nil {
+				t.Fatalf("AddFile: %v", err)
+			}
+		}
+		if err := b.Finish(); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+	}
+
+	// documents returns what the searcher finds, as sorted "name: content" lines.
+	documents := func(s zoekt.Searcher) []string {
+		t.Helper()
+
+		result, err := s.Search(context.Background(), &query.Const{Value: true}, &zoekt.SearchOptions{Whole: true})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+
+		var docs []string
+		for _, f := range result.Files {
+			docs = append(docs, fmt.Sprintf("%s: %s", f.FileName, f.Content))
+		}
+		sort.Strings(docs)
+		return docs
+	}
+
+	dir := t.TempDir()
+	shard := func(n int) string {
+		return filepath.Join(dir, fmt.Sprintf("repo_v%d.%05d.zoekt", index.IndexFormatVersion, n))
+	}
+
+	// The delta build puts the new b.txt in shard 1, and a tombstone for the old one in the .meta
+	// file of shard 0.
+	build(dir, false, map[string]string{"a.txt": "apple", "b.txt": "banana"})
+	build(dir, true, map[string]string{"b.txt": "blueberry"})
+
+	live := newShardedSearcher(1)
+	t.Cleanup(live.Close)
+
+	dw, err := newDirectoryWatcher(dir, &loader{ss: live})
+	if err != nil {
+		t.Fatalf("newDirectoryWatcher: %v", err)
+	}
+	if err := dw.WaitUntilReady(); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+	// From here on the test decides when the searcher looks at the directory.
+	dw.Stop()
+
+	// A normal build of the same files writes one shard. Publish it the way Builder.Finish does,
+	// with the searcher looking at the directory after each step.
+	scratch := t.TempDir()
+	build(scratch, false, map[string]string{"a.txt": "apple", "b.txt": "blueberry"})
+
+	if err := os.Rename(filepath.Join(scratch, filepath.Base(shard(0))), shard(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := dw.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, old := range []string{shard(0) + ".meta", shard(1)} {
+		if err := os.Remove(old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dw.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := NewDirectorySearcher(dir)
+	if err != nil {
+		t.Fatalf("NewDirectorySearcher: %v", err)
+	}
+	t.Cleanup(fresh.Close)
+
+	if diff := cmp.Diff(documents(fresh), documents(live)); diff != "" {
+		t.Errorf("the running searcher differs from a new one (-new +running):\n%s", diff)
 	}
 }
 

@@ -1172,6 +1172,185 @@ func TestIndexDeltaRepositoryDescription(t *testing.T) {
 	}
 }
 
+// A build that fails while it publishes leaves shard 0 describing a commit that the rest of the
+// index doesn't have. Later builds have to rebuild the index, not skip it or stack a delta on it.
+func TestIndexAfterFailedPublish(t *testing.T) {
+	t.Parallel()
+
+	// setup returns a repository whose last build, a delta, published everything but its last shard.
+	setup := func(t *testing.T) (repositoryDir string, options Options, blocker string) {
+		t.Helper()
+
+		repositoryDir = t.TempDir()
+		runGit(t, repositoryDir, "init", "-b", "main")
+		commitFiles(t, repositoryDir, map[string]string{"b.txt": "banana", "c.txt": "cherry"})
+
+		options = Options{
+			RepoDir:     filepath.Join(repositoryDir, ".git"),
+			Branches:    []string{"HEAD"},
+			Incremental: true,
+			BuildOptions: index.Options{
+				IndexDir:              t.TempDir(),
+				ShardPrefixOverride:   "1_1",
+				RepositoryDescription: zoekt.Repository{ID: 1, Name: "repo"},
+			},
+		}
+		if _, err := IndexGitRepo(options); err != nil {
+			t.Fatalf("IndexGitRepo (first build): %s", err)
+		}
+
+		commitFiles(t, repositoryDir, map[string]string{"a_new.txt": "apple", "b.txt": "blueberry"})
+
+		// One document per shard, in name order: a_new.txt goes to shard 1 and b.txt to shard 2.
+		options.BuildOptions.IsDelta = true
+		options.BuildOptions.ShardMax = 1
+		options.BuildOptions.Parallelism = 1
+
+		// A non-empty directory makes the rename of shard 2 fail. Blocking shard 1 wouldn't work: a
+		// directory there counts as an existing shard, and the build stops before it publishes.
+		blocker = filepath.Join(options.BuildOptions.IndexDir, "1_1_v16.00002.zoekt")
+		if err := os.MkdirAll(filepath.Join(blocker, "keep"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := IndexGitRepo(options); err == nil || !strings.Contains(err.Error(), "publishing shard") {
+			t.Fatalf("IndexGitRepo (blocked delta build): got error %v, want a \"publishing shard\" error", err)
+		}
+
+		return repositoryDir, options, blocker
+	}
+
+	// checkCleanBuild fails the test if the index differs from a normal build into a new directory.
+	checkCleanBuild := func(t *testing.T, options Options) {
+		t.Helper()
+
+		got := indexedDocuments(t, options.BuildOptions.IndexDir)
+
+		options.BuildOptions.IndexDir = t.TempDir()
+		options.BuildOptions.IsDelta = false
+		if _, err := IndexGitRepo(options); err != nil {
+			t.Fatalf("IndexGitRepo (clean normal build): %s", err)
+		}
+
+		want := indexedDocuments(t, options.BuildOptions.IndexDir)
+		if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("index differs from a clean normal build (-clean +got):\n%s", diff)
+		}
+	}
+
+	t.Run("same commit", func(t *testing.T) {
+		t.Parallel()
+
+		_, options, blocker := setup(t)
+
+		if updated, err := IndexGitRepo(options); err == nil {
+			t.Errorf("IndexGitRepo (still blocked): got (%t, nil), want an error", updated)
+		}
+
+		if err := os.RemoveAll(blocker); err != nil {
+			t.Fatal(err)
+		}
+		if updated, err := IndexGitRepo(options); !updated || err != nil {
+			t.Errorf("IndexGitRepo (unblocked): got (%t, %v), want (true, nil)", updated, err)
+		}
+		checkCleanBuild(t, options)
+
+		// Nothing changed since, so a skip shows that the index is trusted again.
+		if updated, err := IndexGitRepo(options); updated || err != nil {
+			t.Errorf("IndexGitRepo (nothing changed): got (%t, %v), want (false, nil)", updated, err)
+		}
+	})
+
+	t.Run("new commit", func(t *testing.T) {
+		t.Parallel()
+
+		repositoryDir, options, blocker := setup(t)
+
+		if err := os.RemoveAll(blocker); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, repositoryDir, "rm", "a_new.txt")
+		runGit(t, repositoryDir, "commit", "-m", "delete a file")
+
+		if updated, err := IndexGitRepo(options); !updated || err != nil {
+			t.Errorf("IndexGitRepo (unblocked): got (%t, %v), want (true, nil)", updated, err)
+		}
+		checkCleanBuild(t, options)
+	})
+}
+
+// A build that can't read a blob has to leave the index as it was. Publishing what it did read
+// would drop the file from the index.
+func TestIndexDeltaUnreadableBlob(t *testing.T) {
+	t.Parallel()
+
+	repositoryDir := t.TempDir()
+	runGit(t, repositoryDir, "init", "-b", "main")
+	commitFiles(t, repositoryDir, map[string]string{"a.txt": "apple", "b.txt": "banana"})
+
+	indexDir := t.TempDir()
+	options := Options{
+		RepoDir:  filepath.Join(repositoryDir, ".git"),
+		Branches: []string{"HEAD"},
+		BuildOptions: index.Options{
+			IndexDir:              indexDir,
+			RepositoryDescription: zoekt.Repository{ID: 1, Name: "repo"},
+			// One document per shard, so a.txt is in a temporary shard by the time b.txt fails.
+			ShardMax:    1,
+			Parallelism: 1,
+		},
+	}
+	if _, err := IndexGitRepo(options); err != nil {
+		t.Fatalf("IndexGitRepo (first build): %s", err)
+	}
+
+	commitFiles(t, repositoryDir, map[string]string{"a.txt": "apricot", "b.txt": "blueberry"})
+
+	// The new blob of b.txt is a loose object. Junk in its file makes it unreadable.
+	id := plumbing.ComputeHash(plumbing.BlobObject, []byte("blueberry")).String()
+	blob := filepath.Join(repositoryDir, ".git", "objects", id[:2], id[2:])
+	if err := os.Chmod(blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexFiles := func() []string {
+		files, err := filepath.Glob(filepath.Join(indexDir, "*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	wantFiles, wantDocuments := indexFiles(), indexedDocuments(t, indexDir)
+
+	options.BuildOptions.IsDelta = true
+	if _, err := IndexGitRepo(options); err == nil {
+		t.Fatal("IndexGitRepo (unreadable blob): got no error")
+	}
+
+	if diff := cmp.Diff(wantFiles, indexFiles()); diff != "" {
+		t.Errorf("the failed build changed the files in the index directory (-before +after):\n%s", diff)
+	}
+	if diff := cmp.Diff(wantDocuments, indexedDocuments(t, indexDir), cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("the failed build changed the indexed documents (-before +after):\n%s", diff)
+	}
+}
+
+// commitFiles writes the files to the repository's worktree and commits them.
+func commitFiles(t *testing.T, repositoryDir string, files map[string]string) {
+	t.Helper()
+
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(repositoryDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, repositoryDir, "add", "-A")
+	runGit(t, repositoryDir, "commit", "-m", "change files")
+}
+
 // matchedFiles returns the names of the files in the shards of indexDir that match q, sorted.
 func matchedFiles(t *testing.T, indexDir string, q string) []string {
 	t.Helper()
